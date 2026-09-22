@@ -151,6 +151,11 @@ class CarInterface(CarInterfaceBase):
     ret.longitudinalActuatorDelay = 0.5  # large delay to initially start braking
 
     if candidate == CAR.CHEVROLET_VOLT:
+      # Integral gain for the two-owner allocation (GMFlags.ASCM_LONG): the feedforward carries most of the
+      # request, so ki is low and rises with speed. The 2.4/1.5 schedule above was tuned for the lookups.
+      ret.longitudinalTuning.kiBP = [5., 15.]
+      ret.longitudinalTuning.kiV = [0.3, 0.6]
+
       ret.lateralTuning.pid.kpBP = [0., 40.]
       ret.lateralTuning.pid.kpV = [0., 0.17]
       ret.lateralTuning.pid.kiBP = [0.]

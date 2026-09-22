@@ -1,10 +1,12 @@
+import math
 import numpy as np
 from opendbc.can import CANPacker
-from opendbc.car import Bus, DT_CTRL, structs
+from opendbc.car import Bus, DT_CTRL, structs, ACCELERATION_DUE_TO_GRAVITY
 from opendbc.car.lateral import apply_driver_steer_torque_limits
+from opendbc.car.common.filter_simple import FirstOrderFilter
 from opendbc.car.gm import gmcan
 from opendbc.car.common.conversions import Conversions as CV
-from opendbc.car.gm.values import DBC, CanBus, CarControllerParams, CruiseButtons
+from opendbc.car.gm.values import DBC, CanBus, CarControllerParams, CruiseButtons, LongOwner
 from opendbc.car.interfaces import CarControllerBase
 
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
@@ -36,6 +38,43 @@ class CarController(CarControllerBase):
     self.packer_pt = CANPacker(DBC[self.CP.carFingerprint][Bus.pt])
     self.packer_obj = CANPacker(DBC[self.CP.carFingerprint][Bus.radar])
     self.packer_ch = CANPacker(DBC[self.CP.carFingerprint][Bus.chassis])
+
+    # two-owner longitudinal allocation (GMFlags.ASCM_LONG)
+    self.owner = LongOwner.POWERTRAIN
+    self.pitch = FirstOrderFilter(0., self.params.PITCH_FILTER_RC, 4 * DT_CTRL)  # allocate_long runs at 25 Hz
+
+  def allocate_long(self, CC, CS, stopping):
+    """Gas (Nm) and brake (counts): give the accel request to either the powertrain or the brake controller
+    (see GMFlags.ASCM_LONG in values.py)."""
+    p = self.params
+    v = CS.out.vEgo
+
+    # Grade from the device localizer (north-east-down frame: nose down is negative). On a downhill gravity supplies part
+    # of the requested acceleration, so the actuators only need to produce the rest.
+    if len(CC.orientationNED) == 3:
+      self.pitch.update(CC.orientationNED[1])
+    net = CC.actuators.accel + math.sin(self.pitch.x) * ACCELERATION_DUE_TO_GRAVITY
+
+    # regen the gas/regen path can deliver right now, from the powertrain's reported limit (0x1C5)
+    t_min = CS.axle_torque_min if CS.axle_torque_min_valid else p.MAX_ACC_REGEN
+    a_regen = p.regen_accel_available(t_min, v)
+
+    # owner select with hysteresis; the brake controller keeps the request through a stop
+    if stopping or net < a_regen + p.BRAKE_ENTRY_MARGIN:
+      self.owner = LongOwner.BRAKE
+    elif net > a_regen + p.BRAKE_RELEASE_MARGIN:
+      self.owner = LongOwner.POWERTRAIN
+
+    if self.owner == LongOwner.POWERTRAIN:
+      # physics feedforward on the gas/regen path, brake controller idle
+      gas = float(np.clip(p.torque_ff(net, v), p.MAX_ACC_REGEN, p.MAX_GAS))
+      return gas, 0
+
+    # brake controller: gas pinned at max ACC regen, the whole net effort as a signed request. It may go
+    # positive to release retained braking; stopping and standstill keep it non-positive.
+    target = min(net, 0.) if stopping or CS.out.standstill or CS.out.cruiseState.standstill else net
+    brake = int(round(-max(target, p.ACCEL_MIN) * p.BRAKE_COUNTS_PER_MPS2))
+    return p.MAX_ACC_REGEN, min(brake, p.MAX_BRAKE)
 
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
@@ -89,6 +128,10 @@ class CarController(CarControllerBase):
           # ASCM sends max regen when not enabled
           self.apply_gas = self.params.INACTIVE_REGEN
           self.apply_brake = 0
+          self.owner = LongOwner.POWERTRAIN
+        elif self.params.ASCM_LONG:
+          # two-owner allocation (see CarControllerParams)
+          self.apply_gas, self.apply_brake = self.allocate_long(CC, CS, stopping)
         else:
           self.apply_gas = float(np.interp(actuators.accel, self.params.GAS_LOOKUP_BP, self.params.GAS_LOOKUP_V))
           self.apply_brake = int(round(np.interp(actuators.accel, self.params.BRAKE_LOOKUP_BP, self.params.BRAKE_LOOKUP_V)))
@@ -111,7 +154,8 @@ class CarController(CarControllerBase):
         # GasRegenCmdActive needs to be 1 to avoid cruise faults. It describes the ACC state, not actuation
         can_sends.append(gmcan.create_gas_regen_command(self.packer_pt, CanBus.POWERTRAIN, self.apply_gas, idx, CC.enabled, at_full_stop))
         can_sends.append(gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, self.apply_brake,
-                                                             idx, CC.enabled, near_stop, at_full_stop, self.CP))
+                                                             idx, CC.enabled, near_stop, at_full_stop, self.CP,
+                                                             brake_active=CC.longActive and self.owner == LongOwner.BRAKE))
 
         # Send dashboard UI commands (ACC status)
         send_fcw = hud_alert == VisualAlert.fcw

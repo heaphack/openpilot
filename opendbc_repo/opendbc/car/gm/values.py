@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from enum import Enum, IntFlag
+from enum import Enum, IntEnum, IntFlag
 
 from opendbc.car import Bus, PlatformConfig, DbcDict, Platforms, CarSpecs
 from opendbc.car.structs import CarParams
@@ -32,6 +32,37 @@ class CarControllerParams:
   ACCEL_MAX = 2.  # m/s^2
   ACCEL_MIN = -4.  # m/s^2
 
+  # ---- GMFlags.ASCM_LONG: two-owner longitudinal allocation ----
+  # The lookup tables below treat EBCMFrictionBrakeCmd as a brake pressure. It is a signed acceleration
+  # request, and the EBCM blends regen and friction itself to meet it. With the flag set, the acceleration
+  # request is given to one of two owners (LongOwner) instead of both lookups at once:
+  #   POWERTRAIN: GasRegenCmd = vehicle-model feedforward T(a, v) below, EBCM idle (FrictionBrakeMode 0x1)
+  #   BRAKE:      GasRegenCmd = fixed max ACC regen (-650 Nm), EBCM gets the whole request as a signed
+  #               0.01 m/s^2 acceleration with the brake path active (mode 0xA)
+  # The brake controller takes the request when the net effort (after grade) drops below the minimum axle
+  # torque the powertrain reports it can deliver right now (0x1C5 AxleTorqueMin: regen on an EV, engine
+  # braking on ICE) and hands it back with hysteresis. While it owns the request, a zero request holds the
+  # pressure already applied, so the request may go slightly positive to release it. Confirmed on the Volt;
+  # 0x1C5 is a Global A powertrain message present on every GM platform, so other ASCM cars are expected to
+  # work once the vehicle-model constants below are set for them.
+  #
+  # Feedforward: T[Nm] = (M*(a + G_CRR) + CD*v^2) * R, then x(1/EFF) for drive torque, xEFF for regen.
+  FF_MASS = 1776.          # kg, fixed; includes a typical load on top of the curb weight
+  FF_G_CRR = 0.0785        # m/s^2, rolling resistance as an acceleration (coefficient 0.008 x g)
+  FF_CD = 0.25             # N per (m/s)^2, aerodynamic drag
+  FF_R = 0.3234            # m, effective tire radius (2032 mm rolling circumference / 2 pi)
+  FF_EFF = 0.88            # drivetrain efficiency: divide for drive torque, multiply for regen
+
+  # Owner hysteresis band around the regen available, m/s^2: enter the brake path a little below what the
+  # powertrain can deliver, release only once the request is clearly above it.
+  BRAKE_ENTRY_MARGIN = -0.1
+  BRAKE_RELEASE_MARGIN = 0.2
+
+  # Grade: the device localizer's pitch, smoothed so brake dive and squat do not read as road slope
+  PITCH_FILTER_RC = 0.5           # s
+
+  BRAKE_COUNTS_PER_MPS2 = 100.    # FrictionBrakeCmd is a signed request in 0.01 m/s^2
+
   def __init__(self, CP):
     # Gas/brake lookups
     self.MAX_BRAKE = 400  # ~ -4.0 m/s^2 with regen
@@ -58,16 +89,50 @@ class CarControllerParams:
     self.BRAKE_LOOKUP_BP = [self.ACCEL_MIN, max_regen_acceleration]
     self.BRAKE_LOOKUP_V = [self.MAX_BRAKE, 0.]
 
+    # two-owner allocation above instead of the lookups
+    self.ASCM_LONG = bool(CP.flags & GMFlags.ASCM_LONG)
 
-class GMSafetyFlags(IntFlag):
-  HW_CAM = 1
-  HW_CAM_LONG = 2
-  EV = 4
+  # ---- vehicle-model helpers ----
+  def torque_ff(self, accel, v_ego):
+    """Axle torque (Nm) needed for an accel target: mass, rolling resistance and drag, then drivetrain efficiency."""
+    t = (self.FF_MASS * (accel + self.FF_G_CRR) + self.FF_CD * v_ego * v_ego) * self.FF_R
+    return t / self.FF_EFF if t > 0 else t * self.FF_EFF
+
+  def accel_from_torque(self, torque, v_ego):
+    """Inverse of torque_ff."""
+    t = torque * self.FF_EFF if torque > 0 else torque / self.FF_EFF
+    return (t / self.FF_R - self.FF_CD * v_ego * v_ego) / self.FF_MASS - self.FF_G_CRR
+
+  def regen_accel_available(self, axle_torque_min, v_ego):
+    """Accel the gas/regen path can deliver right now: the powertrain's reported minimum axle torque
+    (0x1C5 AxleTorqueMin), never more regen than we may command (panda min_gas), and never drive torque
+    (a positive minimum, e.g. creep, means no regen is available). The reported minimum does not include
+    the pack's charge-power cap near full charge, so the request can exceed what arrives there and the
+    long controller's integrator makes up the difference."""
+    t = max(axle_torque_min, self.MAX_ACC_REGEN)
+    return self.accel_from_torque(min(t, 0.), v_ego)
+
+
+class LongOwner(IntEnum):
+  POWERTRAIN = 0   # GasRegenCmd carries the request (drive or regen), EBCM idle
+  BRAKE = 1        # GasRegenCmd pinned at max regen, EBCM carries the signed request
 
 
 class GMFlags(IntFlag):
   # Detected flags
   HAS_BSM = 1  # blind spot monitoring
+
+  # Static flags
+  # Two-owner longitudinal allocation: a vehicle-model torque feedforward to the powertrain, a signed
+  # acceleration request to the EBCM, and the handoff between them driven by the powertrain's reported
+  # minimum axle torque (0x1C5). See CarControllerParams. Set per platform once confirmed on that car.
+  ASCM_LONG = 2
+
+
+class GMSafetyFlags(IntFlag):
+  HW_CAM = 1
+  HW_CAM_LONG = 2
+  EV = 4
 
 
 class Footnote(Enum):
@@ -127,6 +192,7 @@ class CAR(Platforms):
   CHEVROLET_VOLT = GMASCMPlatformConfig(
     [GMCarDocs("Chevrolet Volt 2017-18", min_enable_speed=0, video="https://youtu.be/QeMCN_4TFfQ")],
     GMCarSpecs(mass=1607, wheelbase=2.69, steerRatio=17.7, centerToFrontRatio=0.45, tireStiffnessFactor=0.469),
+    flags=GMFlags.ASCM_LONG,
   )
   CADILLAC_ATS = GMASCMPlatformConfig(
     [GMCarDocs("Cadillac ATS Premium Performance 2018")],

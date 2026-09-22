@@ -70,14 +70,18 @@ def create_gas_regen_command(packer, bus, throttle, idx, enabled, at_full_stop):
   return packer.make_can_msg("ASCMGasRegenCmd", bus, values)
 
 
-def create_friction_brake_command(packer, bus, apply_brake, idx, enabled, near_stop, at_full_stop, CP):
+def create_friction_brake_command(packer, bus, apply_brake, idx, enabled, near_stop, at_full_stop, CP,
+                                  brake_active=False):
   mode = 0x1
 
   # TODO: Understand this better. Volts and ICE Camera ACC cars are 0x1 when enabled with no brake
   if enabled and CP.carFingerprint in (CAR.CHEVROLET_BOLT_EUV,):
     mode = 0x9
 
-  if apply_brake > 0:
+  # FrictionBrakeMode: bit 3 = brake path active, low 3 bits = 1 idle, 2 braking, 3 near stop, 5 standstill.
+  # So 0x1 / 0xA / 0xB / 0xD. The brake-active bit is independent of the numeric request: with it set, a
+  # zero request holds the pressure already applied and a slightly positive (signed) request releases it.
+  if apply_brake > 0 or (enabled and brake_active):
     mode = 0xa
     if at_full_stop:
       mode = 0xd
@@ -87,6 +91,7 @@ def create_friction_brake_command(packer, bus, apply_brake, idx, enabled, near_s
     #elif near_stop:
     #  mode = 0xb
 
+  # apply_brake is positive for braking; the CAN field is the signed 0.01 m/s^2 request
   brake = (0x1000 - apply_brake) & 0xfff
   checksum = (0x10000 - (mode << 12) - brake - idx) & 0xffff
 

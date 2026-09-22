@@ -19,7 +19,7 @@ class GmLongitudinalBase(common.CarSafetyTest, common.LongitudinalGasBrakeSafety
 
   RELAY_MALFUNCTION_ADDRS = {0: (0x180, 0x2CB), 2: (0x184,)}  # ASCMLKASteeringCmd, ASCMGasRegenCmd, PSCMStatus
 
-  MAX_POSSIBLE_BRAKE = 2 ** 12
+  MAX_POSSIBLE_BRAKE = 2 ** 11  # Magnitude of the most negative signed 12-bit request.
   MAX_BRAKE = 400
 
   MAX_POSSIBLE_GAS = 4000  # reasonably excessive limits, not signal max

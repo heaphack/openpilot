@@ -24,8 +24,10 @@ function agnos_init {
     if "$AGNOS_PY" --verify "$MANIFEST"; then
       sudo reboot
     fi
+    # The prebuilt updater bundle still imports pyserial, which AGNOS 19.5+
+    # dropped; updater_shim/serial.py points it at openpilot/common/serial.py
     while true; do
-      "$DIR/openpilot/common/hardware/comma/updater" "$AGNOS_PY" "$MANIFEST"
+      PYTHONPATH="$DIR/openpilot/common/hardware/comma/updater_shim" "$DIR/openpilot/common/hardware/comma/updater" "$AGNOS_PY" "$MANIFEST"
     done
   fi
 }

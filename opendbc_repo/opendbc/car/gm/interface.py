@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from math import fabs, exp
+from math import fabs, exp, sqrt, copysign, radians
 import numpy as np
 
 from opendbc.car import get_safety_config, structs
@@ -12,6 +12,22 @@ from opendbc.car.interfaces import CarInterfaceBase, TorqueFromLateralAccelCallb
 
 TransmissionType = structs.CarParams.TransmissionType
 NetworkLocation = structs.CarParams.NetworkLocation
+
+# Volt steer feedforward: steady-state torque needed to hold a hand-wheel angle at speed.
+# Shape is taken from the ASCM LKA calibration tables (DYN cal 84059607). Those tables are exact cubics,
+#   angle_rad = alpha(v) * a + beta(v) * a**3,   a == holding torque in Nm,
+# with alpha/beta following a bicycle-model speed law (Ackermann 1/v**2 term plus a constant), and the
+# torque table is the real root of that cubic. VOLT_FF_GAIN_* is a speed-scheduled correction fitted
+# against ~1.5M steady-state samples from drive logs: GM's table runs ~30 % strong above 10 m/s and
+# the 1/v**2 law loses the torque floor the car shows between 5 and 9 m/s.
+VOLT_FF_L_EFF = 10.07          # alpha 1/v**2 coefficient (effective wheelbase x steer ratio, hand-wheel rad)
+VOLT_FF_UNDERSTEER = 0.01266   # alpha constant term
+VOLT_FF_CUBIC_1 = 3.616        # beta 1/v**2 coefficient
+VOLT_FF_CUBIC_0 = 0.00106      # beta constant term
+VOLT_FF_GAIN_BP = [5.5, 7.5, 9.5, 12.0, 20.0, 31.0]   # m/s
+VOLT_FF_GAIN_V = [1.6, 1.2, 0.93, 0.80, 0.70, 0.76]
+VOLT_FF_MIN_SPEED = 3.0        # m/s, below minSteerSpeed; keeps alpha/beta finite
+VOLT_FF_STEER_MAX_NM = 3.0     # CarControllerParams.STEER_MAX (300) == 3 Nm
 
 NON_LINEAR_TORQUE_PARAMS = {
   CAR.CHEVROLET_BOLT_EUV: [2.6531724862969748, 1.0, 0.1919764879840985, 0.009054123646805178],
@@ -32,12 +48,19 @@ class CarInterface(CarInterfaceBase):
   def get_pid_accel_limits(CP, current_speed, cruise_speed):
     return CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX
 
-  # Determined by iteratively plotting and minimizing error for f(angle, speed) = steer.
   @staticmethod
   def get_steer_feedforward_volt(desired_angle, v_ego):
-    desired_angle *= 0.02904609
-    sigmoid = desired_angle / (1 + fabs(desired_angle))
-    return 0.10006696 * sigmoid * (v_ego + 3.12485927)
+    # Returns torque in units of STEER_MAX for a desired hand-wheel angle in degrees. See VOLT_FF_* above.
+    v = max(v_ego, VOLT_FF_MIN_SPEED)
+    inv_v2 = 1.0 / (v * v)
+    alpha = VOLT_FF_L_EFF * inv_v2 + VOLT_FF_UNDERSTEER
+    beta = VOLT_FF_CUBIC_1 * inv_v2 + VOLT_FF_CUBIC_0
+    # real root of beta*a**3 + alpha*a - |angle| = 0 (Cardano; alpha, beta > 0 so the discriminant is positive)
+    half_q = radians(fabs(desired_angle)) / (2.0 * beta)
+    s = sqrt(half_q * half_q + (alpha / (3.0 * beta)) ** 3)
+    torque_nm = copysign(fabs(half_q + s) ** (1.0 / 3.0), half_q + s) + copysign(fabs(half_q - s) ** (1.0 / 3.0), half_q - s)
+    gain = float(np.interp(v, VOLT_FF_GAIN_BP, VOLT_FF_GAIN_V))
+    return copysign(gain * torque_nm / VOLT_FF_STEER_MAX_NM, desired_angle)
 
   def get_steer_feedforward_function(self):
     if self.CP.carFingerprint == CAR.CHEVROLET_VOLT:
@@ -167,8 +190,12 @@ class CarInterface(CarInterfaceBase):
 
       ret.lateralTuning.pid.kpBP = [0., 40.]
       ret.lateralTuning.pid.kpV = [0., 0.17]
-      ret.lateralTuning.pid.kiBP = [0.]
-      ret.lateralTuning.pid.kiV = [0.]
+      # Small integral term so road crown / crosswind (~0.35 Nm at speed) is held with zero angle error
+      # instead of a permanent P-term offset (lane hugging at highway speed). Same schedule as the other
+      # GM PID tune below. Only sensible together with get_steer_feedforward_volt(), which no longer
+      # under-supplies curve torque, so the integrator holds disturbances rather than feedforward error.
+      ret.lateralTuning.pid.kiBP = [10., 41.]
+      ret.lateralTuning.pid.kiV = [0.01, 0.02]
       ret.lateralTuning.pid.kf = 1.  # get_steer_feedforward_volt()
       ret.steerActuatorDelay = 0.2
 

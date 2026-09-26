@@ -46,7 +46,9 @@ source "$SOURCE_DIR/tools/release/setup_lfs.sh"
 for policy in /sys/devices/system/cpu/cpufreq/policy*; do
   [ -d "$policy" ] || continue
   hardware_max="$(cat "$policy/cpuinfo_max_freq")"
-  echo "$hardware_max" | sudo tee "$policy/scaling_max_freq" >/dev/null
+  # best effort: the kernel rejects values above the current thermal cap (seen on mici), and the
+  # build should not die on a speed-up hint
+  echo "$hardware_max" | sudo tee "$policy/scaling_max_freq" >/dev/null || true
 done
 
 scons

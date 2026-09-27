@@ -112,6 +112,19 @@ class CarController(CarControllerBase):
 
     # ACCActive needs to be 1 to avoid cruise faults. It describes the ACC state, not actuation
     powertrain_acc_active = CC.enabled
+    if self.CP.autoResumeSng:
+      # The ECM latches its ACC standstill state at a stop and holds it until the ACC request is
+      # re-asserted. Once openpilot wants to move again (the near-stop hold released), drop
+      # ACCActive for the frames the ECM still reports standstill: it clears the latch and the car
+      # pulls away without a driver resume. The standstill submode (0xD) is keyed on the same ECM state so
+      # the brake hold is only released when the resume is actually under way. Whichever controller owns
+      # the request then carries it: drive torque, or an eased brake request on a downhill.
+      resume_from_stop = (CC.longActive and CS.cruise_standstill and not self.stop_hold_latched and
+                          not CS.out.brakePressed)
+      at_full_stop = CC.longActive and CS.cruise_standstill and not resume_from_stop
+      if resume_from_stop:
+        powertrain_acc_active = False
+
     brake_control_active = self.long_owner == LongOwner.BRAKE
     brake_idle_mode = 0x9 if CC.enabled and self.CP.carFingerprint == CAR.CHEVROLET_BOLT_EUV else 0x1
     brake_mode = gmcan.select_friction_brake_mode(
@@ -151,6 +164,13 @@ class CarController(CarControllerBase):
       friction_brake_bus = CanBus.POWERTRAIN
 
     powertrain_acc_active = CC.enabled
+    if self.CP.autoResumeSng:
+      # Preserve the existing resume behavior for a legacy configuration with auto-resume enabled.
+      resume_from_stop = CC.longActive and CS.cruise_standstill and not CS.out.brakePressed
+      at_full_stop = CC.longActive and CS.cruise_standstill and not resume_from_stop
+      if resume_from_stop:
+        powertrain_acc_active = False
+
     brake_control_active = brake_accel_cmd < 0.
     brake_idle_mode = 0x9 if CC.enabled and self.CP.carFingerprint == CAR.CHEVROLET_BOLT_EUV else 0x1
     brake_mode = gmcan.select_friction_brake_mode(brake_control_active, False, at_full_stop, brake_idle_mode)

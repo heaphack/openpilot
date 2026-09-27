@@ -28,6 +28,7 @@ class CarState(CarStateBase):
     self.pt_lka_steering_cmd_counter = 0
     self.cam_lka_steering_cmd_counter = 0
     self.buttons_counter = 0
+    self.cruise_standstill = False
 
     self.distance_button = 0
 
@@ -141,7 +142,10 @@ class CarState(CarStateBase):
                       pt_cp.vl["EBCMFrictionBrakeStatus"]["FrictionBrakeUnavailable"] == 1)
 
     ret.cruiseState.enabled = pt_cp.vl["AcceleratorPedal2"]["CruiseState"] != AccState.OFF
-    ret.cruiseState.standstill = pt_cp.vl["AcceleratorPedal2"]["CruiseState"] == AccState.STANDSTILL
+    # The ECM's standstill state. With autoResumeSng the car controller clears it itself, so it is not
+    # reported as a standstill that needs the driver to resume (as Hyundai does).
+    self.cruise_standstill = pt_cp.vl["AcceleratorPedal2"]["CruiseState"] == AccState.STANDSTILL
+    ret.cruiseState.standstill = self.cruise_standstill and not self.CP.autoResumeSng
     if self.CP.networkLocation == NetworkLocation.fwdCamera:
       if self.CP.carFingerprint not in ALT_ACCS:
         ret.cruiseState.speed = cam_cp.vl["ASCMActiveCruiseControlStatus"]["ACCSpeedSetpoint"] * CV.KPH_TO_MS

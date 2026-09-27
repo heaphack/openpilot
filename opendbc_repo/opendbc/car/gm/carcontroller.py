@@ -120,6 +120,19 @@ class CarController(CarControllerBase):
 
     # GasRegenCmdActive needs to be 1 to avoid cruise faults. It describes the ACC state, not actuation
     gas_regen_active = CC.enabled
+    if self.CP.autoResumeSng:
+      # The ECM latches its ACC standstill state at a stop and holds it until the ACC request is
+      # re-asserted. Once openpilot wants to move again (the near-stop hold released), drop
+      # GasRegenCmdActive for the frames the ECM still reports standstill: it clears the latch and the car
+      # pulls away without a driver resume. The standstill submode (0xD) is keyed on the same ECM state so
+      # the brake hold is only released when the resume is actually under way. Whichever controller owns
+      # the request then carries it: drive torque, or an eased brake request on a downhill.
+      resume_from_stop = (CC.longActive and CS.cruise_standstill and not self.stop_hold and
+                          not CS.out.brakePressed)
+      at_full_stop = CC.longActive and CS.cruise_standstill and not resume_from_stop
+      if resume_from_stop:
+        gas_regen_active = False
+
     brake_mode = gmcan.friction_brake_mode(brake_accel < 0., CC.enabled,
                                            CC.longActive and self.owner == LongOwner.BRAKE, near_stop, at_full_stop and self.stop_hold, self.CP)
     self.apply_gas = gas
@@ -157,6 +170,13 @@ class CarController(CarControllerBase):
       friction_brake_bus = CanBus.POWERTRAIN
 
     gas_regen_active = CC.enabled
+    if self.CP.autoResumeSng:
+      # Preserve the existing resume behavior for a legacy configuration with auto-resume enabled.
+      resume_from_stop = CC.longActive and CS.cruise_standstill and not CS.out.brakePressed
+      at_full_stop = CC.longActive and CS.cruise_standstill and not resume_from_stop
+      if resume_from_stop:
+        gas_regen_active = False
+
     brake_mode = gmcan.friction_brake_mode(brake_accel < 0., CC.enabled, False, False, at_full_stop, self.CP)
     self.apply_gas, self.brake_accel, self.accel_request = gas, brake_accel, accel
     return [

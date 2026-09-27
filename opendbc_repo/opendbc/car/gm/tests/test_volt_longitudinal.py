@@ -10,16 +10,15 @@ from opendbc.car.gm.carcontroller import CarController
 from opendbc.car.gm.values import CAR, DBC, CanBus, GMFlags, LongOwner
 
 
-def make_controller(car=CAR.CHEVROLET_VOLT, network="gateway", flags=None):
+def make_controller(car=CAR.CHEVROLET_VOLT, network="gateway", auto_resume=True, flags=None):
   cp = structs.CarParams.new_message(carFingerprint=car, networkLocation=network, openpilotLongitudinalControl=True,
-                                    flags=int(car.config.flags) if flags is None else int(flags))
+                                    flags=int(car.config.flags) if flags is None else int(flags), autoResumeSng=auto_resume)
   return CarController(DBC[car], cp)
 
 
 def make_state(speed=0.5, minimum=100., valid=True, standstill=False, cruise_standstill=False):
   out = structs.CarState.new_message(vEgo=speed, standstill=standstill)
-  out.cruiseState.standstill = cruise_standstill
-  return SimpleNamespace(out=out, axle_torque_min=minimum, axle_torque_min_valid=valid,
+  return SimpleNamespace(out=out, cruise_standstill=cruise_standstill, axle_torque_min=minimum, axle_torque_min_valid=valid,
                          lka_steering_cmd_counter=0, pt_lka_steering_cmd_counter=0, loopback_lka_steering_cmd_updated=False,
                          loopback_lka_steering_cmd_ts_nanos=0)
 
@@ -385,7 +384,7 @@ class TestVoltCreepCAN(unittest.TestCase):
   def test_stopping_still_sends_full_stop_mode(self):
     self.control.actuators.longControlState = "stopping"
     self.state.out.standstill = True
-    self.state.out.cruiseState.standstill = True
+    self.state.cruise_standstill = True
     self.assertEqual(self.update(-2.), (0xd, -2))
 
   def test_manual_resume_releases_brake_hold_before_wheel_motion(self):
@@ -423,11 +422,41 @@ class TestVoltCreepCAN(unittest.TestCase):
     v = parser.vl["ASCMGasRegenCmd"]
     return int(v["GasRegenCmdActive"]), int(v["GasRegenFullStopActive"]), v["GasRegenCmd"]
 
-  def test_standstill_keeps_the_acc_request_asserted(self):
-    self.controller = make_controller()
-    self.assertFalse(self.controller.CP.autoResumeSng)
+  def test_auto_resume_clears_the_ecm_standstill_latch(self):
+    # stopped, ECM in ACC standstill: hold with the standstill submode and the ACC request asserted
+    self.control.actuators.longControlState = "stopping"
     self.state.out.standstill = True
-    self.state.out.cruiseState.standstill = True
+    self.state.cruise_standstill = True
+    self.assertEqual(self.update(-2.0)[0], 0xd)
+    self.controller.frame = self.tick * 4
+    _, msgs = self.controller.update(self.control.as_reader(), self.state, 0)
+    self.assertEqual(self.gas_regen(msgs)[:2], (1, 1))
+    # openpilot wants to move while the ECM still reports standstill: drive torque, no brake request, and the
+    # ACC-active bit dropped so the ECM leaves standstill. The powertrain owns the request once it has climbed
+    # out of the stopping ramp (STOPPING_EXIT_RATE).
+    self.control.actuators.longControlState = "pid"
+    for _ in range(80):
+      self.update(0.5)
+      if self.controller.owner == LongOwner.POWERTRAIN:
+        break
+    self.controller.frame = self.tick * 4
+    _, msgs = self.controller.update(self.control.as_reader(), self.state, 0)
+    active, full_stop, gas = self.gas_regen(msgs)
+    self.assertEqual((active, full_stop), (0, 0))
+    self.assertGreater(gas, 0.)
+    self.assertEqual(self.controller.owner, LongOwner.POWERTRAIN)
+    # ECM leaves standstill: the ACC request is asserted again
+    self.state.cruise_standstill = False
+    self.state.out.standstill = False
+    self.update(0.5)
+    self.controller.frame = self.tick * 4
+    _, msgs = self.controller.update(self.control.as_reader(), self.state, 0)
+    self.assertEqual(self.gas_regen(msgs)[:2], (1, 0))
+
+  def test_no_auto_resume_keeps_the_acc_request_asserted(self):
+    self.controller = make_controller(auto_resume=False)
+    self.state.out.standstill = True
+    self.state.cruise_standstill = True
     self.update(0.5)
     self.controller.frame = self.tick * 4
     _, msgs = self.controller.update(self.control.as_reader(), self.state, 0)

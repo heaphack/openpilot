@@ -157,6 +157,9 @@ class CarInterface(CarInterfaceBase):
     ret.longitudinalActuatorDelay = 0.5  # large delay to initially start braking
 
     if candidate == CAR.CHEVROLET_VOLT:
+      # openpilot resumes from an ACC standstill on its own (see CarController), so no resume-required alert
+      ret.autoResumeSng = ret.openpilotLongitudinalControl
+
       # Integral gain for the two-owner allocation (GMFlags.ASCM_LONG): the feedforward carries most of the
       # request, so ki is low and rises with speed. The 2.4/1.5 schedule above was tuned for the lookups.
       ret.longitudinalTuning.kiBP = [5., 15.]

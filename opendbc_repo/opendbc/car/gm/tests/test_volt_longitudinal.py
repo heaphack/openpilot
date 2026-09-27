@@ -32,13 +32,14 @@ def make_control(pitch=None):
   return control
 
 
-class TestAllocateLong(unittest.TestCase):
+class TestAscmLongitudinal(unittest.TestCase):
   def setUp(self):
     self.controller = make_controller()
     self.state = make_state()
     self.control = make_control()
 
   def allocate(self, accel, frames=1, stopping=False, pitch=None):
+    self.control.actuators.longControlState = "stopping" if stopping else "pid"
     self.control.actuators.accel = accel
     if pitch is not None:
       self.control.orientationNED = [0., pitch, 0.]
@@ -46,8 +47,8 @@ class TestAllocateLong(unittest.TestCase):
       reader = self.control.as_reader()
       for _ in range(4):  # one 25 Hz allocation spans four control frames of pitch filtering
         self.controller.update_pitch(reader)
-      result = self.controller.allocate_long(reader, self.state, stopping)
-    return result
+      self.controller.update_ascm_longitudinal(reader, self.state, 0)
+    return self.controller.apply_gas, self.controller.brake_accel
 
   def test_signed_request_between_entry_and_release(self):
     self.state = make_state(speed=1.0)  # 0.1 m/s^2 lies inside the ownership band at this speed.
@@ -211,7 +212,8 @@ class TestPowertrainTorqueFloor(unittest.TestCase):
     for valid in (True, False, True):
       state = make_state(speed=10., minimum=-450., valid=valid)
       control.actuators.accel = -1.1
-      gas, brake = controller.allocate_long(control.as_reader(), state, False)
+      controller.update_ascm_longitudinal(control.as_reader(), state, 0)
+      gas, brake = controller.apply_gas, controller.brake_accel
       self.assertEqual(controller.owner, LongOwner.BRAKE, msg=f"valid={valid}")
       self.assertEqual((gas, brake), (-650., -1.1))
 
@@ -322,6 +324,22 @@ class TestVoltCreepCAN(unittest.TestCase):
     self.state.out.cruiseState.standstill = True
     self.assertEqual(self.update(-2.), (0xd, -2))
 
+  def gas_regen(self, messages):
+    parser = CANParser(DBC[CAR.CHEVROLET_VOLT][Bus.pt], [("ASCMGasRegenCmd", 25)], CanBus.POWERTRAIN)
+    parser.update([[0, messages]])
+    v = parser.vl["ASCMGasRegenCmd"]
+    return int(v["GasRegenCmdActive"]), int(v["GasRegenFullStopActive"]), v["GasRegenCmd"]
+
+  def test_standstill_keeps_the_acc_request_asserted(self):
+    self.controller = make_controller()
+    self.assertFalse(self.controller.CP.autoResumeSng)
+    self.state.out.standstill = True
+    self.state.out.cruiseState.standstill = True
+    self.update(0.5)
+    self.controller.frame = self.tick * 4
+    _, msgs = self.controller.update(self.control.as_reader(), self.state, 0)
+    self.assertEqual(self.gas_regen(msgs)[:2], (1, 1))
+
   def test_disabled_helper_cannot_force_active_zero_demand(self):
     mode = gmcan.friction_brake_mode(False, False, True, True, False, self.controller.CP)
     self.assertEqual(mode, 0x1)
@@ -365,13 +383,15 @@ class TestNearStopHold(unittest.TestCase):
     self.p = self.controller.params
 
   def allocate(self, accel, stopping, pitch=None):
+    self.control.actuators.longControlState = "stopping" if stopping else "pid"
     self.control.actuators.accel = accel
     if pitch is not None:
       self.control.orientationNED = [0., pitch, 0.]
     reader = self.control.as_reader()
     for _ in range(4):  # one 25 Hz allocation spans four control frames of pitch filtering
       self.controller.update_pitch(reader)
-    return self.controller.allocate_long(reader, self.state, stopping)
+    self.controller.update_ascm_longitudinal(reader, self.state, 0)
+    return self.controller.apply_gas, self.controller.brake_accel
 
   def test_flicker_keeps_the_hold(self):
     # longcontrol's ramp is at -1.16 when shouldStop flickers off and the PID hands over -0.05, then up to +0.14

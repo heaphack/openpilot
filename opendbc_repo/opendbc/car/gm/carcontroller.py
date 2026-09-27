@@ -117,7 +117,10 @@ class CarController(CarControllerBase):
     gas_regen_active = CC.enabled
     brake_mode = gmcan.friction_brake_mode(brake_accel < 0., CC.enabled,
                                            CC.longActive and self.owner == LongOwner.BRAKE, near_stop, at_full_stop and self.stop_hold, self.CP)
-    self.apply_gas, self.brake_accel, self.accel_request = gas, brake_accel, net
+    self.apply_gas = gas
+    self.brake_accel = brake_accel
+    # Report the signed brake request after hold limiting, clipping, and CAN quantization.
+    self.accel_request = brake_accel if self.owner == LongOwner.BRAKE else net
     return [
       gmcan.create_gas_regen_command(self.packer_pt, CanBus.POWERTRAIN, gas, idx, gas_regen_active, at_full_stop),
       gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, brake_accel, idx, brake_mode),

@@ -251,7 +251,7 @@ class TestVoltCreepCAN(unittest.TestCase):
     self.control.actuators.accel = accel
     self.controller.frame = self.tick * 4
     nanos = 1_000_000_000 + self.tick * 40_000_000
-    _, messages = self.controller.update(self.control.as_reader(), self.state, nanos)
+    self.output, messages = self.controller.update(self.control.as_reader(), self.state, nanos)
     self.assertTrue(0x315 in self.parser.update([[nanos, messages]]))
     self.tick += 1
     brake_message = next(message for message in messages if message[0] == 0x315)
@@ -263,6 +263,43 @@ class TestVoltCreepCAN(unittest.TestCase):
     idx = data[4] & 3
     self.assertEqual(int.from_bytes(data[2:4], "big"), (0x10000 - (mode << 12) - raw_brake - idx) & 0xffff)
     return mode, demand
+
+  def test_reported_brake_accel_matches_signed_can_request(self):
+    cases = ((0.1, math.atan(0.05), 8., True, 0.),  # grade compensation suppressed by stop hold
+             (0.124, 0., 8., False, 0.12),          # positive release, quantized
+             (-0.126, 0., 8., False, -0.13),        # negative request, quantized
+             (-5., 0., 8., False, -4.),            # negative safety bound
+             (3., 0., 10000., False, 2.))          # positive bound with an excessive reported floor
+    for accel, pitch, minimum, stopping, expected in cases:
+      with self.subTest(accel=accel, stopping=stopping):
+        self.controller = make_controller()
+        self.state = make_state(speed=0., minimum=minimum)
+        self.control = make_control()
+        self.controller.pitch.x = pitch
+        self.control.actuators.longControlState = "stopping" if stopping else "pid"
+        _, demand = self.update(accel)
+        self.assertEqual(self.controller.owner, LongOwner.BRAKE)
+        self.assertAlmostEqual(demand, expected)
+        self.assertAlmostEqual(self.output.accel, demand)
+        self.assertAlmostEqual(self.output.brake, max(-demand, 0.))
+        self.assertAlmostEqual(self.control.actuators.accel, accel)  # input remains available in carControl
+        # At 100 Hz the output keeps the most recent 25 Hz command, not the new unsent input.
+        self.control.actuators.accel = 1.
+        for _ in range(3):
+          output, messages = self.controller.update(self.control.as_reader(), self.state, 0)
+          self.assertFalse(any(message[0] == 0x315 for message in messages))
+          self.assertAlmostEqual(output.accel, demand)
+
+  def test_powertrain_accel_logging_remains_the_net_request(self):
+    self.state = make_state(speed=0., minimum=8.)
+    pitch = math.atan(0.05)
+    self.controller.pitch.x = pitch
+    self.assertEqual(self.update(1.)[0], 0x1)
+    self.assertEqual(self.controller.owner, LongOwner.POWERTRAIN)
+    self.assertAlmostEqual(self.output.accel, 1. + math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY)
+    self.control.longActive = False
+    self.update(1.)
+    self.assertEqual(self.output.accel, 0.)
 
   def test_signed_demand_holds_0xa_until_release(self):
     for accel, expected in ((-0.3, -30.), (0., 0.), (0.02, 2.), (0.1, 10.), (-0.05, -5.)):

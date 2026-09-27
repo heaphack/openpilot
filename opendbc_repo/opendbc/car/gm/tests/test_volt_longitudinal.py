@@ -420,20 +420,45 @@ class TestVoltCreepCAN(unittest.TestCase):
       self.assertEqual(raw - 0x1000 if raw >= 0x800 else raw, counts)
       self.assertEqual(int.from_bytes(data[2:4], "big"), (0x10000 - (0xa << 12) - raw - 2) & 0xffff)
 
-  def test_legacy_lookup_is_byte_identical_to_the_pressure_era_mapping(self):
-    # platforms without ASCM_LONG keep the bytes openpilot has always sent them: the old code interpolated
-    # brake 'counts' [400 .. 0] over [ACCEL_MIN .. max regen] and negated them into the field
-    for car in (CAR.CHEVROLET_BOLT_EUV, CAR.CHEVROLET_VOLT, CAR.CADILLAC_ATS):
-      controller = make_controller(car=car, flags=0)
+  def test_legacy_lookup_matches_upstream_brake_frames(self):
+    # Exercise the controller's mode selection as well as its magnitude. Zero rounded counts must be idle.
+    for car, network in ((CAR.CHEVROLET_VOLT, "gateway"), (CAR.CADILLAC_ATS, "gateway"),
+                         (CAR.CHEVROLET_BOLT_EUV, "fwdCamera")):
+      controller = make_controller(car=car, network=network, flags=0)
+      controller.CP.autoResumeSng = False
       p = controller.params
-      with self.subTest(car=car):
-        for accel in np.arange(-4.5, 2.5, 0.001):
-          old_counts = int(round(np.interp(accel, p.BRAKE_LOOKUP_BP, [400., 0.])))
-          old_raw = (0x1000 - old_counts) & 0xfff
-          new_accel = float(np.interp(accel, p.BRAKE_LOOKUP_BP, p.BRAKE_LOOKUP_V))
-          data = gmcan.create_friction_brake_command(controller.packer_ch, CanBus.CHASSIS, new_accel, 0, 0xa)[1]
-          self.assertEqual(((data[0] & 0xf) << 8) | data[1], old_raw, msg=f"accel={accel:.3f}")
+      control = make_control()
+      bus = CanBus.POWERTRAIN if network == "fwdCamera" else CanBus.CHASSIS
+      # Include the sub-count region at the lookup's release boundary alongside a full-range sweep.
+      edge = p.BRAKE_LOOKUP_BP[1]
+      width_per_count = (edge - p.BRAKE_LOOKUP_BP[0]) / 400.
+      requests = list(np.arange(-4.5, 2.5, 0.01)) + [edge - c * width_per_count for c in (0.4, 0.5, 0.6, 1.5, 2.5)]
+      for standstill, stopping in ((False, False), (True, False), (True, True)):
+        with self.subTest(car=car, standstill=standstill, stopping=stopping):
+          state = make_state(speed=0. if standstill else 1., standstill=standstill)
+          control.actuators.longControlState = "stopping" if stopping else "pid"
+          for idx, accel in enumerate(requests):
+            control.actuators.accel = float(accel)
+            old_counts = int(round(np.interp(control.actuators.accel, p.BRAKE_LOOKUP_BP, [400., 0.])))
+            mode = 0x9 if car == CAR.CHEVROLET_BOLT_EUV else 0x1
+            if old_counts > 0:
+              mode = 0xd if standstill and (network != "fwdCamera" or stopping) else 0xa
+            expected = gmcan.create_friction_brake_command(controller.packer_ch, bus, -old_counts / 100., idx % 4, mode)
+            messages = controller.update_legacy_longitudinal(control.as_reader(), state, idx % 4)
+            actual = next(message for message in messages if message[0] == 0x315)
+            self.assertEqual(actual, expected, msg=f"accel={control.actuators.accel}")
 
+  def test_legacy_half_counts_keep_upstream_ties_to_even(self):
+    controller = make_controller(flags=0)
+    controller.CP.autoResumeSng = False
+    controller.params.BRAKE_LOOKUP_BP = [-4., 0.]  # exactly representable half-count inputs
+    control = make_control()
+    for accel, counts in ((-1.125, 112), (-1.375, 138)):
+      with self.subTest(accel=accel):
+        control.actuators.accel = accel
+        messages = controller.update_legacy_longitudinal(control.as_reader(), make_state(), 0)
+        data = next(message[1] for message in messages if message[0] == 0x315)
+        self.assertEqual(((data[0] & 0xf) << 8) | data[1], (-counts) & 0xfff)
 
 if __name__ == "__main__":
   unittest.main()

@@ -136,7 +136,10 @@ class CarController(CarControllerBase):
       gas, brake_accel, accel = p.INACTIVE_REGEN, 0., 0.
     else:
       gas = float(np.interp(accel, p.GAS_LOOKUP_BP, p.GAS_LOOKUP_V))
-      brake_accel = float(np.interp(accel, p.BRAKE_LOOKUP_BP, p.BRAKE_LOOKUP_V))
+      # Preserve upstream's count rounding before selecting the brake mode.
+      brake_lookup_counts = [-100. * a for a in p.BRAKE_LOOKUP_V]
+      brake_counts = int(round(np.interp(accel, p.BRAKE_LOOKUP_BP, brake_lookup_counts)))
+      brake_accel = -brake_counts / 100.
       # Don't allow any gas above inactive regen while stopping.
       # FIXME: brakes aren't applied immediately when enabling at a stop.
       if stopping:

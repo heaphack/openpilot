@@ -20,7 +20,6 @@ class CarControllerParams:
   STEER_DRIVER_ALLOWANCE = 65
   STEER_DRIVER_MULTIPLIER = 4
   STEER_DRIVER_FACTOR = 100
-  NEAR_STOP_BRAKE_PHASE = 0.5  # m/s
 
   # Heartbeat for dash "Service Adaptive Cruise" and "Service Front Camera"
   ADAS_KEEPALIVE_STEP = 100
@@ -67,6 +66,16 @@ class CarControllerParams:
 
   # Grade: the device localizer's pitch, smoothed so brake dive and squat do not read as road slope
   PITCH_FILTER_RC = 0.5           # s
+
+  # ---- near-stop hold (FrictionBrakeMode 0xB) ----
+  # openpilot's shouldStop is the model's raw acceleration output crossing +0.1 m/s^2 below 0.3 m/s, with no
+  # hysteresis, and at a crawl it flickers for 50-500 ms. Following that flicker out of the stopping state
+  # released the brakes: in 0xA the EBCM lets the pressure go on any reduction of the request at a stop, the
+  # ECM's own standstill hold (0xD) is still 1.2-1.7 s away, and creep rolls the car. So once openpilot commits
+  # to a stop the brake controller holds the near-stop submode, which brings the car to a stop and keeps it
+  # there whatever the numeric request does, until long control asks for clearly more than the flicker ever
+  # does. The flickers seen so far peak at +0.14 m/s^2; real launches pass this within ~0.3 s.
+  LAUNCH_INTENT_ACCEL = 0.3       # m/s^2
 
   BRAKE_COUNTS_PER_MPS2 = 100.    # FrictionBrakeCmd is a signed request in 0.01 m/s^2
 

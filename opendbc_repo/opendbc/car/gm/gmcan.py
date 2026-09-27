@@ -79,17 +79,15 @@ def create_friction_brake_command(packer, bus, apply_brake, idx, enabled, near_s
     mode = 0x9
 
   # FrictionBrakeMode: bit 3 = brake path active, low 3 bits = 1 idle, 2 braking, 3 near stop, 5 standstill.
-  # So 0x1 / 0xA / 0xB / 0xD. The brake-active bit is independent of the numeric request: with it set, a
-  # zero request holds the pressure already applied and a slightly positive (signed) request releases it.
+  # So 0x1 / 0xA / 0xB / 0xD. The brake-active bit is independent of the numeric request. In 0xA any reduction
+  # of the request at a stop releases the pressure; in 0xB (near stop, the stock ASCM's submode once it has
+  # committed to a stop) and 0xD (the ECM's standstill hold) the pressure is retained through it.
   if apply_brake > 0 or (enabled and brake_active):
     mode = 0xa
     if at_full_stop:
       mode = 0xd
-
-    # TODO: this is to have GM bringing the car to complete stop,
-    # but currently it conflicts with OP controls, so turned off. Not set by all cars
-    #elif near_stop:
-    #  mode = 0xb
+    elif near_stop:
+      mode = 0xb
 
   # apply_brake is positive for braking; the CAN field is the signed 0.01 m/s^2 request
   brake = (0x1000 - apply_brake) & 0xfff

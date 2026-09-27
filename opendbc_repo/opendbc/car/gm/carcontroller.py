@@ -42,18 +42,27 @@ class CarController(CarControllerBase):
     # two-owner longitudinal allocation (GMFlags.ASCM_LONG)
     self.owner = LongOwner.POWERTRAIN
     self.pitch = FirstOrderFilter(0., self.params.PITCH_FILTER_RC, 4 * DT_CTRL)  # allocate_long runs at 25 Hz
+    # near-stop hold (see CarControllerParams): set when openpilot commits to a stop, cleared by launch intent
+    self.stop_hold = False
 
   def allocate_long(self, CC, CS, stopping):
     """Gas (Nm) and brake (counts): give the accel request to either the powertrain or the brake controller
     (see GMFlags.ASCM_LONG in values.py)."""
     p = self.params
     v = CS.out.vEgo
+    accel = CC.actuators.accel
+
+    # Near-stop hold: on from the stopping state, through any shouldStop flicker, until long control asks to go
+    # (or goes inactive, see update). Releasing it just returns to the ordinary allocation below: the brake
+    # controller keeps the request and eases it where gravity or creep already supply the acceleration, and the
+    # powertrain takes it where more is needed.
+    self.stop_hold = stopping or (self.stop_hold and accel <= p.LAUNCH_INTENT_ACCEL)
 
     # Grade from the device localizer (north-east-down frame: nose down is negative). On a downhill gravity supplies part
     # of the requested acceleration, so the actuators only need to produce the rest.
     if len(CC.orientationNED) == 3:
       self.pitch.update(CC.orientationNED[1])
-    net = CC.actuators.accel + math.sin(self.pitch.x) * ACCELERATION_DUE_TO_GRAVITY
+    net = accel + math.sin(self.pitch.x) * ACCELERATION_DUE_TO_GRAVITY
 
     # Compare required torque with the minimum available after releasing the brakes, including creep.
     t_ff = p.torque_ff(net, v)
@@ -63,7 +72,7 @@ class CarController(CarControllerBase):
     t_entry = p.torque_ff(a_floor + p.BRAKE_ENTRY_MARGIN, v)
     t_release = p.torque_ff(a_floor + p.BRAKE_RELEASE_MARGIN, v)
 
-    if stopping or t_ff < t_entry:
+    if self.stop_hold or t_ff < t_entry:
       self.owner = LongOwner.BRAKE
     elif t_ff > t_release:
       self.owner = LongOwner.POWERTRAIN
@@ -73,8 +82,8 @@ class CarController(CarControllerBase):
       return gas, 0
 
     # brake controller: gas pinned at max ACC regen, the whole net effort as a signed request. It may go
-    # positive to release retained braking; stopping and standstill keep it non-positive.
-    target = min(net, 0.) if stopping or CS.out.standstill or CS.out.cruiseState.standstill else net
+    # positive to release retained braking; the near-stop hold keeps it non-positive.
+    target = min(net, 0.) if self.stop_hold else net
     brake = int(round(-max(target, p.ACCEL_MIN) * p.BRAKE_COUNTS_PER_MPS2))
     return p.MAX_ACC_REGEN, min(brake, p.MAX_BRAKE)
 
@@ -131,6 +140,7 @@ class CarController(CarControllerBase):
           self.apply_gas = self.params.INACTIVE_REGEN
           self.apply_brake = 0
           self.owner = LongOwner.POWERTRAIN
+          self.stop_hold = False
         elif self.params.ASCM_LONG:
           # two-owner allocation (see CarControllerParams)
           self.apply_gas, self.apply_brake = self.allocate_long(CC, CS, stopping)
@@ -145,7 +155,8 @@ class CarController(CarControllerBase):
         idx = (self.frame // 4) % 4
 
         at_full_stop = CC.longActive and CS.out.standstill
-        near_stop = CC.longActive and (abs(CS.out.vEgo) < self.params.NEAR_STOP_BRAKE_PHASE)
+        # 0xB while the near-stop hold is on (GMFlags.ASCM_LONG); other platforms keep 0xA
+        near_stop = CC.longActive and self.params.ASCM_LONG and self.stop_hold
         friction_brake_bus = CanBus.CHASSIS
         # GM Camera exceptions
         # TODO: can we always check the longControlState?

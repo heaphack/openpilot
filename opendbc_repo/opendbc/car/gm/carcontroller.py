@@ -41,9 +41,17 @@ class CarController(CarControllerBase):
 
     # two-owner longitudinal allocation (GMFlags.ASCM_LONG)
     self.owner = LongOwner.POWERTRAIN
-    self.pitch = FirstOrderFilter(0., self.params.PITCH_FILTER_RC, 4 * DT_CTRL)  # allocate_long runs at 25 Hz
+    self.pitch = FirstOrderFilter(0., self.params.PITCH_FILTER_RC, DT_CTRL)
     # near-stop hold (see CarControllerParams): set when openpilot commits to a stop, cleared by launch intent
     self.stop_hold = False
+
+  def update_pitch(self, CC):
+    """Filter the device localizer's pitch (north-east-down frame: nose down is negative), the road grade the
+    allocation compensates. Runs every control frame whether or not long control is active, so an engage starts
+    from the current slope rather than the one at the last disengagement; a stale uphill estimate on a descent
+    would hand a braking request to the powertrain as drive torque for the filter's settling time."""
+    if len(CC.orientationNED) == 3:
+      self.pitch.update(CC.orientationNED[1])
 
   def allocate_long(self, CC, CS, stopping):
     """Gas (Nm) and brake (counts): give the accel request to either the powertrain or the brake controller
@@ -58,10 +66,8 @@ class CarController(CarControllerBase):
     # powertrain takes it where more is needed.
     self.stop_hold = stopping or (self.stop_hold and accel <= p.LAUNCH_INTENT_ACCEL)
 
-    # Grade from the device localizer (north-east-down frame: nose down is negative). On a downhill gravity supplies part
-    # of the requested acceleration, so the actuators only need to produce the rest.
-    if len(CC.orientationNED) == 3:
-      self.pitch.update(CC.orientationNED[1])
+    # On a downhill gravity supplies part of the requested acceleration, so the actuators only need to produce
+    # the rest (filtered pitch from update_pitch)
     net = accel + math.sin(self.pitch.x) * ACCELERATION_DUE_TO_GRAVITY
 
     # Compare required torque with the minimum available after releasing the brakes, including creep.
@@ -94,6 +100,8 @@ class CarController(CarControllerBase):
     hud_v_cruise = hud_control.setSpeed
     if hud_v_cruise > 70:
       hud_v_cruise = 0
+
+    self.update_pitch(CC)
 
     # Send CAN commands.
     can_sends = []

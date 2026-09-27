@@ -42,7 +42,10 @@ class TestAllocateLong(unittest.TestCase):
     if pitch is not None:
       self.control.orientationNED = [0., pitch, 0.]
     for _ in range(frames):
-      result = self.controller.allocate_long(self.control.as_reader(), self.state, stopping)
+      reader = self.control.as_reader()
+      for _ in range(4):  # one 25 Hz allocation spans four control frames of pitch filtering
+        self.controller.update_pitch(reader)
+      result = self.controller.allocate_long(reader, self.state, stopping)
     return result
 
   def test_signed_request_between_entry_and_release(self):
@@ -91,6 +94,23 @@ class TestAllocateLong(unittest.TestCase):
       gas, brake = self.allocate(0.3, pitch=0.)
     self.assertEqual(self.controller.owner, LongOwner.POWERTRAIN)
     self.assertEqual(brake, 0)
+
+  def test_pitch_tracks_while_long_control_is_inactive(self):
+    # driven by hand from an 8% uphill onto an 8% downhill, then re-engaged: the allocation must see the descent
+    # at once, not the uphill from the last disengagement
+    uphill, downhill = math.atan(0.08), -math.atan(0.08)
+    self.allocate(-0.5, frames=300, pitch=uphill)
+    self.control.longActive = False
+    self.control.orientationNED = [0., downhill, 0.]
+    for k in range(500):  # 5 s of driving with long control off
+      self.controller.frame = k
+      self.controller.update(self.control.as_reader(), self.state, 0)
+    self.assertAlmostEqual(self.controller.pitch.x, downhill, places=4)
+    self.control.longActive = True
+    gas, brake = self.allocate(-0.5, pitch=downhill)
+    self.assertEqual(self.controller.owner, LongOwner.BRAKE)
+    self.assertEqual(gas, -650.)
+    self.assertGreater(brake, 100)  # -0.5 plus 0.78 of grade to hold: braking, not drive torque
 
   def test_grade_filter_settles_at_its_time_constant(self):
     # The filter runs at the 25 Hz allocation rate: a 0.5 s time constant means 63% of a pitch step after
@@ -302,7 +322,10 @@ class TestNearStopHold(unittest.TestCase):
     self.control.actuators.accel = accel
     if pitch is not None:
       self.control.orientationNED = [0., pitch, 0.]
-    return self.controller.allocate_long(self.control.as_reader(), self.state, stopping)
+    reader = self.control.as_reader()
+    for _ in range(4):  # one 25 Hz allocation spans four control frames of pitch filtering
+      self.controller.update_pitch(reader)
+    return self.controller.allocate_long(reader, self.state, stopping)
 
   def test_flicker_keeps_the_hold(self):
     # longcontrol's ramp is at -1.16 when shouldStop flickers off and the PID hands over -0.05, then up to +0.14

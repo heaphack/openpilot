@@ -121,8 +121,11 @@ class CarControllerParams:
     return (t / self.FF_R - self.FF_CD * v_ego * v_ego) / self.FF_MASS - self.FF_G_CRR
 
   def powertrain_torque_floor(self, axle_torque_min, valid, v_ego):
-    """Estimate minimum axle torque after brake release; the live report can fall near zero during hold."""
-    reported = max(axle_torque_min, self.MAX_ACC_REGEN) if valid else self.MAX_ACC_REGEN
+    """Estimate minimum axle torque after brake release; the live report can fall near zero during hold.
+    An invalid report counts as no regen available (0 Nm): the brake controller then carries every braking
+    request and the EBCM blends in whatever regen there is, rather than the allocator crediting the powertrain
+    with braking it cannot see. The creep table still applies below the creep speed."""
+    reported = max(axle_torque_min, self.MAX_ACC_REGEN) if valid else 0.
     creep = float(np.interp(v_ego, self.CREEP_TORQUE_BP, self.CREEP_TORQUE_V))
     if creep <= 0.:
       return reported

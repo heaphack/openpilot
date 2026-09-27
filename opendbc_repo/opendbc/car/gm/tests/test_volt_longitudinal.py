@@ -188,9 +188,21 @@ class TestPowertrainTorqueFloor(unittest.TestCase):
   def test_above_creep_uses_live_limit_and_invalid_fallback(self):
     p = make_controller().params
     for speed in (1.44, 4., 15.):
-      for minimum, valid, expected in ((-700., True, -650.), (-100., True, -100.), (80., True, 80.), (999., False, -650.)):
+      for minimum, valid, expected in ((-700., True, -650.), (-100., True, -100.), (80., True, 80.), (999., False, 0.), (-500., False, 0.)):
         with self.subTest(speed=speed, minimum=minimum, valid=valid):
           self.assertEqual(p.powertrain_torque_floor(minimum, valid, speed), expected)
+
+  def test_invalid_report_never_releases_the_brakes(self):
+    # a -1.1 m/s^2 request at 10 m/s needs more than the -450 Nm of regen the powertrain reports, so the brake
+    # controller owns it; losing the report must not hand it to the powertrain on an assumed -650 Nm of regen
+    controller = make_controller()
+    control = make_control()
+    for valid in (True, False, True):
+      state = make_state(speed=10., minimum=-450., valid=valid)
+      control.actuators.accel = -1.1
+      gas, brake = controller.allocate_long(control.as_reader(), state, False)
+      self.assertEqual(controller.owner, LongOwner.BRAKE, msg=f"valid={valid}")
+      self.assertEqual((gas, brake), (-650., 110))
 
   def test_fade_is_continuous_and_respects_reported_limit(self):
     p = make_controller().params

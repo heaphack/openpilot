@@ -55,19 +55,21 @@ class CarController(CarControllerBase):
       self.pitch.update(CC.orientationNED[1])
     net = CC.actuators.accel + math.sin(self.pitch.x) * ACCELERATION_DUE_TO_GRAVITY
 
-    # regen the gas/regen path can deliver right now, from the powertrain's reported limit (0x1C5)
-    t_min = CS.axle_torque_min if CS.axle_torque_min_valid else p.MAX_ACC_REGEN
-    a_regen = p.regen_accel_available(t_min, v)
+    # Compare required torque with the minimum available after releasing the brakes, including creep.
+    t_ff = p.torque_ff(net, v)
+    t_floor = p.powertrain_torque_floor(CS.axle_torque_min, CS.axle_torque_min_valid, v)
+    a_floor = p.accel_from_torque(t_floor, v)
+    # Preserve the acceleration hysteresis across the drive/regen efficiency change.
+    t_entry = p.torque_ff(a_floor + p.BRAKE_ENTRY_MARGIN, v)
+    t_release = p.torque_ff(a_floor + p.BRAKE_RELEASE_MARGIN, v)
 
-    # owner select with hysteresis; the brake controller keeps the request through a stop
-    if stopping or net < a_regen + p.BRAKE_ENTRY_MARGIN:
+    if stopping or t_ff < t_entry:
       self.owner = LongOwner.BRAKE
-    elif net > a_regen + p.BRAKE_RELEASE_MARGIN:
+    elif t_ff > t_release:
       self.owner = LongOwner.POWERTRAIN
 
     if self.owner == LongOwner.POWERTRAIN:
-      # physics feedforward on the gas/regen path, brake controller idle
-      gas = float(np.clip(p.torque_ff(net, v), p.MAX_ACC_REGEN, p.MAX_GAS))
+      gas = float(np.clip(t_ff, p.MAX_ACC_REGEN, p.MAX_GAS))
       return gas, 0
 
     # brake controller: gas pinned at max ACC regen, the whole net effort as a signed request. It may go

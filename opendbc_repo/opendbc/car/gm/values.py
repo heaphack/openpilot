@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum, IntFlag
 
+import numpy as np
+
 from opendbc.car import Bus, PlatformConfig, DbcDict, Platforms, CarSpecs
 from opendbc.car.structs import CarParams
 from opendbc.car.docs_definitions import CarDocs, CarFootnote, CarHarness, CarParts, Column
@@ -40,8 +42,8 @@ class CarControllerParams:
   #   BRAKE:      GasRegenCmd = fixed max ACC regen (-650 Nm), EBCM gets the whole request as a signed
   #               0.01 m/s^2 acceleration with the brake path active (mode 0xA)
   # The brake controller takes the request when the net effort (after grade) drops below the minimum axle
-  # torque the powertrain reports it can deliver right now (0x1C5 AxleTorqueMin: regen on an EV, engine
-  # braking on ICE) and hands it back with hysteresis. While it owns the request, a zero request holds the
+  # torque available after brake release (0x1C5 AxleTorqueMin plus a Volt creep estimate) and hands it
+  # back with hysteresis. While it owns the request, a zero request holds the
   # pressure already applied, so the request may go slightly positive to release it. Confirmed on the Volt;
   # 0x1C5 is a Global A powertrain message present on every GM platform, so other ASCM cars are expected to
   # work once the vehicle-model constants below are set for them.
@@ -53,10 +55,15 @@ class CarControllerParams:
   FF_R = 0.3234            # m, effective tire radius (2032 mm rolling circumference / 2 pi)
   FF_EFF = 0.88            # drivetrain efficiency: divide for drive torque, multiply for regen
 
-  # Owner hysteresis band around the regen available, m/s^2: enter the brake path a little below what the
+  # Owner hysteresis band around the estimated powertrain floor, m/s^2: enter the brake path a little below what the
   # powertrain can deliver, release only once the request is clearly above it.
   BRAKE_ENTRY_MARGIN = -0.1
   BRAKE_RELEASE_MARGIN = 0.2
+
+  # Released-creep estimate for the Volt, fitted to actual axle torque. Speed in m/s, torque in Nm.
+  CREEP_TORQUE_BP = [0., 1.44]
+  # Fade the model back to the live limit before the table ends, avoiding a jump into negative regen.
+  CREEP_FADE_BP = [1.10, 1.44]
 
   # Grade: the device localizer's pitch, smoothed so brake dive and squat do not read as road slope
   PITCH_FILTER_RC = 0.5           # s
@@ -91,6 +98,7 @@ class CarControllerParams:
 
     # two-owner allocation above instead of the lookups
     self.ASCM_LONG = bool(CP.flags & GMFlags.ASCM_LONG)
+    self.CREEP_TORQUE_V = [323., 0.] if CP.carFingerprint == CAR.CHEVROLET_VOLT else [0., 0.]
 
   # ---- vehicle-model helpers ----
   def torque_ff(self, accel, v_ego):
@@ -103,14 +111,15 @@ class CarControllerParams:
     t = torque * self.FF_EFF if torque > 0 else torque / self.FF_EFF
     return (t / self.FF_R - self.FF_CD * v_ego * v_ego) / self.FF_MASS - self.FF_G_CRR
 
-  def regen_accel_available(self, axle_torque_min, v_ego):
-    """Accel the gas/regen path can deliver right now: the powertrain's reported minimum axle torque
-    (0x1C5 AxleTorqueMin), never more regen than we may command (panda min_gas), and never drive torque
-    (a positive minimum, e.g. creep, means no regen is available). The reported minimum does not include
-    the pack's charge-power cap near full charge, so the request can exceed what arrives there and the
-    long controller's integrator makes up the difference."""
-    t = max(axle_torque_min, self.MAX_ACC_REGEN)
-    return self.accel_from_torque(min(t, 0.), v_ego)
+  def powertrain_torque_floor(self, axle_torque_min, valid, v_ego):
+    """Estimate minimum axle torque after brake release; the live report can fall near zero during hold."""
+    reported = max(axle_torque_min, self.MAX_ACC_REGEN) if valid else self.MAX_ACC_REGEN
+    creep = float(np.interp(v_ego, self.CREEP_TORQUE_BP, self.CREEP_TORQUE_V))
+    if creep <= 0.:
+      return reported
+    blend = float(np.interp(v_ego, self.CREEP_FADE_BP, [1., 0.]))
+    blend = blend * blend * (3. - 2. * blend)
+    return reported + blend * max(creep - reported, 0.)
 
 
 class LongOwner(IntEnum):

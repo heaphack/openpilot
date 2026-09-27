@@ -46,6 +46,7 @@ class TestAllocateLong(unittest.TestCase):
     return result
 
   def test_signed_request_between_entry_and_release(self):
+    self.state = make_state(speed=1.0)  # 0.1 m/s^2 lies inside the ownership band at this speed.
     # A small positive request does not hand the request to the brake controller from the powertrain.
     self.allocate(0.1)
     self.assertEqual(self.controller.owner, LongOwner.POWERTRAIN)
@@ -60,7 +61,7 @@ class TestAllocateLong(unittest.TestCase):
       with self.subTest(speed=speed):
         self.controller = make_controller()
         self.state = make_state(speed=speed, minimum=100. if speed < 2. else -650.)
-        a_regen = p.regen_accel_available(self.state.axle_torque_min, speed)
+        a_regen = p.accel_from_torque(p.powertrain_torque_floor(self.state.axle_torque_min, True, speed), speed)
         self.allocate(a_regen - 0.5)
         self.assertEqual(self.controller.owner, LongOwner.BRAKE)
         self.allocate(a_regen + 0.1)
@@ -75,6 +76,7 @@ class TestAllocateLong(unittest.TestCase):
           self.assertEqual(self.controller.owner, LongOwner.POWERTRAIN)
 
   def test_downhill_keeps_brake_controller_with_positive_request(self):
+    self.state = make_state(speed=1.0)
     # A 5% downgrade supplies ~0.49 m/s^2; a modest positive request is still braking effort.
     pitch = -math.atan(0.05)
     grade = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY
@@ -122,6 +124,27 @@ class TestAllocateLong(unittest.TestCase):
       self.assertEqual(brake, 0)
       self.assertEqual(self.controller.owner, LongOwner.BRAKE)
 
+  def test_held_minimum_does_not_release_on_mild_uphill(self):
+    # Reconstructed first handoffs in the two September 26 drives: the reported floor was only 8 Nm.
+    for speed, pitch, accel in ((0.0485, 0.01685, -0.03012), (0.0583, 0.01513, -0.00596),
+                                (0.0544, 0.02806, -0.03437), (0.1186, 0.02378, -0.02034)):
+      with self.subTest(speed=speed, pitch=pitch):
+        self.controller = make_controller()
+        self.controller.owner = LongOwner.BRAKE
+        self.controller.pitch.x = pitch
+        self.state = make_state(speed=speed, minimum=8.)
+        gas, brake = self.allocate(accel, pitch=pitch)
+        self.assertEqual(self.controller.owner, LongOwner.BRAKE)
+        self.assertEqual(gas, -650.)
+        self.assertLess(brake, 0)  # Positive signed acceleration can ease braking without giving up ownership.
+
+  def test_small_positive_target_below_creep_requires_brake(self):
+    self.state = make_state(speed=0.5, minimum=8.)
+    self.assertEqual(self.allocate(0.1), (-650., -10))
+    self.assertEqual(self.controller.owner, LongOwner.BRAKE)
+    self.assertEqual(self.allocate(0.5)[1], 0)
+    self.assertEqual(self.controller.owner, LongOwner.POWERTRAIN)
+
   def test_maximum_authority(self):
     self.assertEqual(self.allocate(-4.), (-650., 400))
     self.assertEqual(self.allocate(-6.), (-650., 400))
@@ -132,6 +155,43 @@ class TestAllocateLong(unittest.TestCase):
     self.assertEqual(self.controller.owner, LongOwner.POWERTRAIN)
     self.assertEqual(brake, 0)
     self.assertAlmostEqual(p.accel_from_torque(gas, self.state.out.vEgo), 0.5, places=6)
+
+
+class TestPowertrainTorqueFloor(unittest.TestCase):
+  def test_creep_estimate_and_valid_minimum(self):
+    p = make_controller().params
+    for valid in (True, False):
+      self.assertEqual(p.powertrain_torque_floor(8., valid, 0.), 323.)
+      self.assertAlmostEqual(p.powertrain_torque_floor(8., valid, 0.44704), 222.72644444444444)
+    self.assertEqual(p.powertrain_torque_floor(350., True, 0.44704), 350.)
+
+  def test_above_creep_uses_live_limit_and_invalid_fallback(self):
+    p = make_controller().params
+    for speed in (1.44, 4., 15.):
+      for minimum, valid, expected in ((-700., True, -650.), (-100., True, -100.), (80., True, 80.), (999., False, -650.)):
+        with self.subTest(speed=speed, minimum=minimum, valid=valid):
+          self.assertEqual(p.powertrain_torque_floor(minimum, valid, speed), expected)
+
+  def test_fade_is_continuous_and_respects_reported_limit(self):
+    p = make_controller().params
+    for minimum in (-650., -100., 8., 350.):
+      for boundary in p.CREEP_FADE_BP:
+        below = p.powertrain_torque_floor(minimum, True, boundary - 1e-6)
+        above = p.powertrain_torque_floor(minimum, True, boundary + 1e-6)
+        self.assertAlmostEqual(below, above, delta=0.002)
+      previous = p.powertrain_torque_floor(minimum, True, 1.10)
+      for i in range(1, 101):
+        floor = p.powertrain_torque_floor(minimum, True, 1.10 + 0.34 * i / 100)
+        self.assertGreaterEqual(floor, minimum)
+        self.assertLessEqual(floor, previous + 1e-9)
+        previous = floor
+      self.assertEqual(previous, minimum)
+
+  def test_volt_fit_is_not_applied_to_other_powertrains(self):
+    p = make_controller(CAR.CHEVROLET_MALIBU).params
+    for speed in (0., 0.5, 1.44):
+      self.assertEqual(p.powertrain_torque_floor(-100., True, speed), -100.)
+      self.assertEqual(p.powertrain_torque_floor(80., True, speed), 80.)
 
 
 class TestVoltCreepCAN(unittest.TestCase):
@@ -163,9 +223,11 @@ class TestVoltCreepCAN(unittest.TestCase):
     for accel, expected in ((-0.3, -30.), (0., 0.), (0.02, 2.), (0.1, 10.), (-0.05, -5.)):
       self.assertEqual(self.update(accel), (0xa, expected))
     self.assertEqual(self.controller.apply_gas, -650.)
-    self.assertEqual(self.update(0.3), (0x1, 0.))
-    for accel in (0.1, 0., -0.05, 0.1):
+    self.assertEqual(self.update(0.3), (0xa, 30.))  # Still below the released-creep handoff threshold.
+    self.assertEqual(self.update(0.5), (0x1, 0.))
+    for accel in (0.3, 0.2, 0.15, 0.3):
       self.assertEqual(self.update(accel), (0x1, 0.))
+    self.assertEqual(self.update(0.1), (0xa, 10.))
 
   def test_stop_intent_drops_positive_request(self):
     self.update(-0.3)

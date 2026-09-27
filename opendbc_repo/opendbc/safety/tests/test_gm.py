@@ -28,7 +28,7 @@ class GmLongitudinalBase(common.CarSafetyTest, common.LongitudinalGasBrakeSafety
   PCM_CRUISE = False  # openpilot can control the PCM state if longitudinal
 
   def _send_brake_msg(self, brake):
-    values = {"FrictionBrakeCmd": -brake}
+    values = {"FrictionBrakeCmd": -brake * 0.01}  # counts -> m/s^2
     return self.packer_chassis.make_can_msg_safety("EBCMFrictionBrakeCmd", self.BRAKE_BUS, values)
 
   def _send_gas_msg(self, gas):

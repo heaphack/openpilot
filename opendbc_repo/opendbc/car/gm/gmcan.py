@@ -1,3 +1,4 @@
+import math
 from opendbc.car.can_definitions import CanData
 from opendbc.car.gm.values import CAR
 
@@ -70,34 +71,39 @@ def create_gas_regen_command(packer, bus, throttle, idx, enabled, at_full_stop):
   return packer.make_can_msg("ASCMGasRegenCmd", bus, values)
 
 
-def create_friction_brake_command(packer, bus, apply_brake, idx, enabled, near_stop, at_full_stop, CP,
-                                  brake_active=False):
+def friction_brake_mode(braking, enabled, brake_active, near_stop, at_full_stop, CP):
+  """FrictionBrakeMode nibble: bit 3 = brake path active, low 3 bits = 1 idle, 2 braking, 3 near stop,
+  5 standstill. So 0x1 / 0xA / 0xB / 0xD. The active bit is independent of the numeric request. In 0xA any
+  reduction of the request at a stop releases the pressure; in 0xB (near stop, the stock ASCM's submode once it
+  has committed to a stop) and 0xD (the ECM's standstill hold) the pressure is retained through it."""
   mode = 0x1
 
   # TODO: Understand this better. Volts and ICE Camera ACC cars are 0x1 when enabled with no brake
   if enabled and CP.carFingerprint in (CAR.CHEVROLET_BOLT_EUV,):
     mode = 0x9
 
-  # FrictionBrakeMode: bit 3 = brake path active, low 3 bits = 1 idle, 2 braking, 3 near stop, 5 standstill.
-  # So 0x1 / 0xA / 0xB / 0xD. The brake-active bit is independent of the numeric request. In 0xA any reduction
-  # of the request at a stop releases the pressure; in 0xB (near stop, the stock ASCM's submode once it has
-  # committed to a stop) and 0xD (the ECM's standstill hold) the pressure is retained through it.
-  if apply_brake > 0 or (enabled and brake_active):
+  if braking or (enabled and brake_active):
     mode = 0xa
     if at_full_stop:
       mode = 0xd
     elif near_stop:
       mode = 0xb
+  return mode
 
-  # apply_brake is positive for braking; the CAN field is the signed 0.01 m/s^2 request
-  brake = (0x1000 - apply_brake) & 0xfff
-  checksum = (0x10000 - (mode << 12) - brake - idx) & 0xffff
+
+def create_friction_brake_command(packer, bus, accel, idx, mode):
+  """EBCMFrictionBrakeCmd: a signed acceleration request in m/s^2 (negative braking, positive a release of
+  retained braking; the EBCM blends regen and friction itself) and the mode nibble. The field is 0.01 m/s^2
+  per count; it is quantized here the way the packer quantizes it, so the checksum covers the bytes sent."""
+  counts = int(math.floor(accel * 100. + 0.5))
+  raw = counts & 0xfff
+  checksum = (0x10000 - (mode << 12) - raw - idx) & 0xffff
 
   values = {
     "RollingCounter": idx,
     "FrictionBrakeMode": mode,
     "FrictionBrakeChecksum": checksum,
-    "FrictionBrakeCmd": -apply_brake
+    "FrictionBrakeCmd": counts * 0.01
   }
 
   return packer.make_can_msg("EBCMFrictionBrakeCmd", bus, values)

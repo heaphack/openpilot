@@ -25,7 +25,8 @@ class CarController(CarControllerBase):
     self.start_time = 0.
     self.apply_torque_last = 0
     self.apply_gas = 0
-    self.apply_brake = 0
+    self.accel_request = 0.  # the acceleration request carried by whichever controller owns it, m/s^2
+    self.brake_accel = 0.    # the EBCM's signed request, m/s^2: negative braking, positive releasing held braking
     self.last_steer_frame = 0
     self.last_button_frame = 0
     self.cancel_counter = 0
@@ -54,8 +55,8 @@ class CarController(CarControllerBase):
       self.pitch.update(CC.orientationNED[1])
 
   def allocate_long(self, CC, CS, stopping):
-    """Gas (Nm) and brake (counts): give the accel request to either the powertrain or the brake controller
-    (see GMFlags.ASCM_LONG in values.py)."""
+    """Gas (Nm) and the EBCM's signed acceleration request (m/s^2): one acceleration request, given to either
+    the powertrain, which converts it to torque, or the brake controller (see GMFlags.ASCM_LONG in values.py)."""
     p = self.params
     v = CS.out.vEgo
     accel = CC.actuators.accel
@@ -83,15 +84,18 @@ class CarController(CarControllerBase):
     elif t_ff > t_release:
       self.owner = LongOwner.POWERTRAIN
 
+    self.accel_request = net
     if self.owner == LongOwner.POWERTRAIN:
       gas = float(np.clip(t_ff, p.MAX_ACC_REGEN, p.MAX_GAS))
-      return gas, 0
+      return gas, 0.
 
-    # brake controller: gas pinned at max ACC regen, the whole net effort as a signed request. It may go
-    # positive to release retained braking; the near-stop hold keeps it non-positive.
+    # brake controller: gas pinned at max ACC regen, the whole net effort as the signed request. It may go
+    # positive to release retained braking; the near-stop hold keeps it non-positive. Bounded to the panda's
+    # envelope on both sides, so a bad axle-torque report cannot produce a frame the safety would drop, and
+    # quantized to the field's 0.01 m/s^2 so what is reported is what is sent.
     target = min(net, 0.) if self.stop_hold else net
-    brake = int(round(-max(target, p.ACCEL_MIN) * p.BRAKE_COUNTS_PER_MPS2))
-    return p.MAX_ACC_REGEN, min(brake, p.MAX_BRAKE)
+    request = math.floor(float(np.clip(target, p.EBCM_ACCEL_MIN, p.EBCM_ACCEL_MAX)) * 100. + 0.5) / 100.
+    return p.MAX_ACC_REGEN, request
 
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
@@ -146,15 +150,18 @@ class CarController(CarControllerBase):
         if not CC.longActive:
           # ASCM sends max regen when not enabled
           self.apply_gas = self.params.INACTIVE_REGEN
-          self.apply_brake = 0
+          self.brake_accel = 0.
+          self.accel_request = 0.
           self.owner = LongOwner.POWERTRAIN
           self.stop_hold = False
         elif self.params.ASCM_LONG:
           # two-owner allocation (see CarControllerParams)
-          self.apply_gas, self.apply_brake = self.allocate_long(CC, CS, stopping)
+          self.apply_gas, self.brake_accel = self.allocate_long(CC, CS, stopping)
         else:
+          # platforms not yet confirmed on the two-owner allocation: the historical mapping, gas and brake at once
+          self.accel_request = actuators.accel
           self.apply_gas = float(np.interp(actuators.accel, self.params.GAS_LOOKUP_BP, self.params.GAS_LOOKUP_V))
-          self.apply_brake = int(round(np.interp(actuators.accel, self.params.BRAKE_LOOKUP_BP, self.params.BRAKE_LOOKUP_V)))
+          self.brake_accel = float(np.interp(actuators.accel, self.params.BRAKE_LOOKUP_BP, self.params.BRAKE_LOOKUP_V))
           # Don't allow any gas above inactive regen while stopping
           # FIXME: brakes aren't applied immediately when enabling at a stop
           if stopping:
@@ -174,9 +181,9 @@ class CarController(CarControllerBase):
 
         # GasRegenCmdActive needs to be 1 to avoid cruise faults. It describes the ACC state, not actuation
         can_sends.append(gmcan.create_gas_regen_command(self.packer_pt, CanBus.POWERTRAIN, self.apply_gas, idx, CC.enabled, at_full_stop))
-        can_sends.append(gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, self.apply_brake,
-                                                             idx, CC.enabled, near_stop, at_full_stop, self.CP,
-                                                             brake_active=CC.longActive and self.owner == LongOwner.BRAKE))
+        brake_mode = gmcan.friction_brake_mode(self.brake_accel < 0., CC.enabled,
+                                               CC.longActive and self.owner == LongOwner.BRAKE, near_stop, at_full_stop, self.CP)
+        can_sends.append(gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, self.brake_accel, idx, brake_mode))
 
         # Send dashboard UI commands (ACC status)
         send_fcw = hud_alert == VisualAlert.fcw
@@ -221,8 +228,9 @@ class CarController(CarControllerBase):
     new_actuators = actuators.as_builder()
     new_actuators.torque = self.apply_torque_last / self.params.STEER_MAX
     new_actuators.torqueOutputCan = self.apply_torque_last
+    new_actuators.accel = self.accel_request
     new_actuators.gas = self.apply_gas
-    new_actuators.brake = self.apply_brake
+    new_actuators.brake = max(-self.brake_accel, 0.)
 
     self.frame += 1
     return new_actuators, can_sends

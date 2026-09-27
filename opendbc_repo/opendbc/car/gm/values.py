@@ -77,12 +77,13 @@ class CarControllerParams:
   # does. The flickers seen so far peak at +0.14 m/s^2; real launches pass this within ~0.3 s.
   LAUNCH_INTENT_ACCEL = 0.3       # m/s^2
 
-  BRAKE_COUNTS_PER_MPS2 = 100.    # FrictionBrakeCmd is a signed request in 0.01 m/s^2
+  # EBCMFrictionBrakeCmd is a signed acceleration request in m/s^2 (0.01 per count). These mirror the panda's
+  # [-400, +200] count envelope: a positive request only releases braking the EBCM already holds.
+  EBCM_ACCEL_MIN = -4.
+  EBCM_ACCEL_MAX = 2.
 
   def __init__(self, CP):
-    # Gas/brake lookups
-    self.MAX_BRAKE = 400  # ~ -4.0 m/s^2 with regen
-
+    # Gas/brake lookups (platforms without GMFlags.ASCM_LONG)
     if CP.carFingerprint in (CAMERA_ACC_CAR | SDGM_CAR):
       self.MAX_GAS = 1346.0
       self.MAX_ACC_REGEN = -540.0
@@ -102,8 +103,13 @@ class CarControllerParams:
     self.GAS_LOOKUP_BP = [max_regen_acceleration, 0., self.ACCEL_MAX]
     self.GAS_LOOKUP_V = [self.MAX_ACC_REGEN, 0., self.MAX_GAS]
 
+    # The EBCM request as a function of the planner's acceleration, in the field's own units (m/s^2). This is
+    # the mapping openpilot has always sent these platforms, written when the field was read as a brake
+    # pressure (400 counts at ACCEL_MIN): it asks the EBCM for less than the planner's deceleration and adds
+    # regen on the gas path at the same time. Retained unchanged until each platform is confirmed on the
+    # two-owner allocation, which sends the planner's acceleration itself.
     self.BRAKE_LOOKUP_BP = [self.ACCEL_MIN, max_regen_acceleration]
-    self.BRAKE_LOOKUP_V = [self.MAX_BRAKE, 0.]
+    self.BRAKE_LOOKUP_V = [self.EBCM_ACCEL_MIN, 0.]
 
     # two-owner allocation above instead of the lookups
     self.ASCM_LONG = bool(CP.flags & GMFlags.ASCM_LONG)

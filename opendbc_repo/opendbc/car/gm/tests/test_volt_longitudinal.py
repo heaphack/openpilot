@@ -1,4 +1,5 @@
 import math
+import numpy as np
 import unittest
 from types import SimpleNamespace
 
@@ -54,7 +55,7 @@ class TestAllocateLong(unittest.TestCase):
     self.allocate(0.1)
     self.assertEqual(self.controller.owner, LongOwner.POWERTRAIN)
     # Once the brake controller owns it, the request follows the corrected acceleration through zero.
-    for accel, expected in ((-0.3, 30), (-0.1, 10), (0., 0), (0.02, -2), (0.1, -10), (-0.05, 5)):
+    for accel, expected in ((-0.3, -0.3), (-0.1, -0.1), (0., 0.), (0.02, 0.02), (0.1, 0.1), (-0.05, -0.05)):
       self.assertEqual(self.allocate(accel), (-650., expected))
       self.assertEqual(self.controller.owner, LongOwner.BRAKE)
 
@@ -71,7 +72,7 @@ class TestAllocateLong(unittest.TestCase):
         self.assertEqual(self.controller.owner, LongOwner.BRAKE)
         gas, brake = self.allocate(a_regen + 0.3)
         self.assertEqual(self.controller.owner, LongOwner.POWERTRAIN)
-        self.assertEqual(brake, 0)
+        self.assertEqual(brake, 0.)
         self.assertAlmostEqual(gas, p.torque_ff(a_regen + 0.3, speed), delta=0.01)  # float32 accel
         # No chatter: falling back inside the band does not hand the request back to the brakes.
         for accel in (a_regen + 0.1, a_regen, a_regen - 0.05):
@@ -88,7 +89,7 @@ class TestAllocateLong(unittest.TestCase):
     self.assertEqual(self.controller.owner, LongOwner.BRAKE)
     gas, brake = self.allocate(0.3, pitch=pitch)
     self.assertEqual(self.controller.owner, LongOwner.BRAKE)
-    self.assertEqual((gas, brake), (-650., -int(round((0.3 + grade) * 100))))
+    self.assertEqual((gas, brake), (-650., round((0.3 + grade) * 100) / 100))
     # Flat ground with the same request hands the request back to the powertrain.
     for _ in range(300):
       gas, brake = self.allocate(0.3, pitch=0.)
@@ -110,7 +111,7 @@ class TestAllocateLong(unittest.TestCase):
     gas, brake = self.allocate(-0.5, pitch=downhill)
     self.assertEqual(self.controller.owner, LongOwner.BRAKE)
     self.assertEqual(gas, -650.)
-    self.assertGreater(brake, 100)  # -0.5 plus 0.78 of grade to hold: braking, not drive torque
+    self.assertLess(brake, -1.0)  # -0.5 plus 0.78 of grade to hold: braking, not drive torque
 
   def test_grade_filter_settles_at_its_time_constant(self):
     # The filter runs at the 25 Hz allocation rate: a 0.5 s time constant means 63% of a pitch step after
@@ -135,14 +136,14 @@ class TestAllocateLong(unittest.TestCase):
 
   def test_near_stop_hold_keeps_the_request_non_positive(self):
     self.allocate(-0.3)
-    self.assertEqual(self.allocate(0.1)[1], -10)  # easing while moving, no stop committed
-    self.assertEqual(self.allocate(0.1, stopping=True)[1], 0)  # committed to a stop
+    self.assertEqual(self.allocate(0.1)[1], 0.1)  # easing while moving, no stop committed
+    self.assertEqual(self.allocate(0.1, stopping=True)[1], 0.)  # committed to a stop
     self.state = make_state(standstill=True, cruise_standstill=True)
-    self.assertEqual(self.allocate(0.1)[1], 0)  # the hold outlives the stopping state at the stop
+    self.assertEqual(self.allocate(0.1)[1], 0.)  # the hold outlives the stopping state at the stop
     self.assertEqual(self.controller.owner, LongOwner.BRAKE)
     # a standstill the controller did not stop into (engaged at a stop) is not held: the request may ease
     self.controller = make_controller()
-    self.assertEqual(self.allocate(0.1)[1], -10)
+    self.assertEqual(self.allocate(0.1)[1], 0.1)
 
   def test_held_minimum_does_not_release_on_mild_uphill(self):
     # Reconstructed first handoffs in the two September 26 drives: the reported floor was only 8 Nm.
@@ -156,18 +157,28 @@ class TestAllocateLong(unittest.TestCase):
         gas, brake = self.allocate(accel, pitch=pitch)
         self.assertEqual(self.controller.owner, LongOwner.BRAKE)
         self.assertEqual(gas, -650.)
-        self.assertLess(brake, 0)  # Positive signed acceleration can ease braking without giving up ownership.
+        self.assertGreater(brake, 0)  # Positive signed acceleration can ease braking without giving up ownership.
 
   def test_small_positive_target_below_creep_requires_brake(self):
     self.state = make_state(speed=0.5, minimum=8.)
-    self.assertEqual(self.allocate(0.1), (-650., -10))
+    self.assertEqual(self.allocate(0.1), (-650., 0.1))
     self.assertEqual(self.controller.owner, LongOwner.BRAKE)
     self.assertEqual(self.allocate(0.5)[1], 0)
     self.assertEqual(self.controller.owner, LongOwner.POWERTRAIN)
 
   def test_maximum_authority(self):
-    self.assertEqual(self.allocate(-4.), (-650., 400))
-    self.assertEqual(self.allocate(-6.), (-650., 400))
+    self.assertEqual(self.allocate(-4.), (-650., -4.))
+    self.assertEqual(self.allocate(-6.), (-650., -4.))
+
+  def test_release_request_is_bounded_to_the_safety_envelope(self):
+    # a bogus but 'valid' minimum torque report would put the release threshold out of reach; the request the
+    # brake controller then carries must still fit the panda's +200-count (+2.0 m/s^2) max_accel
+    self.state = make_state(speed=1.0, minimum=1300.)
+    self.controller.owner = LongOwner.BRAKE
+    self.controller.pitch.x = math.atan(0.05)
+    gas, brake = self.allocate(1.6, pitch=math.atan(0.05))  # net +2.09 m/s^2, still under the release threshold
+    self.assertEqual(self.controller.owner, LongOwner.BRAKE)
+    self.assertEqual((gas, brake), (-650., self.controller.params.EBCM_ACCEL_MAX))
 
   def test_powertrain_feedforward_is_invertible(self):
     p = self.controller.params
@@ -202,7 +213,7 @@ class TestPowertrainTorqueFloor(unittest.TestCase):
       control.actuators.accel = -1.1
       gas, brake = controller.allocate_long(control.as_reader(), state, False)
       self.assertEqual(controller.owner, LongOwner.BRAKE, msg=f"valid={valid}")
-      self.assertEqual((gas, brake), (-650., 110))
+      self.assertEqual((gas, brake), (-650., -1.1))
 
   def test_fade_is_continuous_and_respects_reported_limit(self):
     p = make_controller().params
@@ -253,23 +264,23 @@ class TestVoltCreepCAN(unittest.TestCase):
 
   def test_signed_demand_holds_0xa_until_release(self):
     for accel, expected in ((-0.3, -30.), (0., 0.), (0.02, 2.), (0.1, 10.), (-0.05, -5.)):
-      self.assertEqual(self.update(accel), (0xa, expected))
+      self.assertEqual(self.update(accel), (0xa, expected / 100))
     self.assertEqual(self.controller.apply_gas, -650.)
-    self.assertEqual(self.update(0.3), (0xa, 30.))  # Still below the released-creep handoff threshold.
+    self.assertEqual(self.update(0.3), (0xa, 0.3))  # Still below the released-creep handoff threshold.
     self.assertEqual(self.update(0.5), (0x1, 0.))
     for accel in (0.3, 0.2, 0.15, 0.3):
       self.assertEqual(self.update(accel), (0x1, 0.))
-    self.assertEqual(self.update(0.1), (0xa, 10.))
+    self.assertEqual(self.update(0.1), (0xa, 0.1))
 
   def test_stop_intent_drops_positive_request(self):
     self.update(-0.3)
-    self.assertEqual(self.update(0.1), (0xa, 10.))
+    self.assertEqual(self.update(0.1), (0xa, 0.1))
     # committing to the stop: near-stop submode, no positive request, and the hold outlives the stopping state
     self.control.actuators.longControlState = "stopping"
     self.assertEqual(self.update(0.1), (0xb, 0.))
-    self.assertEqual(self.update(-0.3), (0xb, -30.))
+    self.assertEqual(self.update(-0.3), (0xb, -0.3))
     self.control.actuators.longControlState = "pid"
-    self.assertEqual(self.update(-0.3), (0xb, -30.))
+    self.assertEqual(self.update(-0.3), (0xb, -0.3))
 
   def test_other_platforms_keep_lookup_allocation(self):
     self.controller = make_controller(CAR.CHEVROLET_MALIBU)
@@ -282,7 +293,7 @@ class TestVoltCreepCAN(unittest.TestCase):
 
   def test_disengagement_clears_retained_path(self):
     self.update(-0.3)
-    self.assertEqual(self.update(0.1), (0xa, 10.))
+    self.assertEqual(self.update(0.1), (0xa, 0.1))
     # CC.enabled can remain true for lateral control while longitudinal is inactive.
     self.control.longActive = False
     self.assertEqual(self.update(0.), (0x1, 0.))
@@ -290,12 +301,12 @@ class TestVoltCreepCAN(unittest.TestCase):
 
   def test_near_stop_mode_is_held_through_a_flicker(self):
     self.control.actuators.longControlState = "stopping"
-    self.assertEqual(self.update(-1.0), (0xb, -100.))
+    self.assertEqual(self.update(-1.0), (0xb, -1))
     self.control.actuators.longControlState = "pid"
-    for accel, demand in ((-0.05, -5.), (0.07, 0.), (0.14, 0.)):
+    for accel, demand in ((-0.05, -0.05), (0.07, 0.), (0.14, 0.)):
       self.assertEqual(self.update(accel), (0xb, demand))
     # intent below the creep floor: the brake controller keeps the request and eases it in 0xA
-    self.assertEqual(self.update(0.32), (0xa, 32.))
+    self.assertEqual(self.update(0.32), (0xa, 0.32))
     # intent above it: torque
     self.assertEqual(self.update(0.5), (0x1, 0.))
     self.assertEqual(self.controller.owner, LongOwner.POWERTRAIN)
@@ -309,12 +320,35 @@ class TestVoltCreepCAN(unittest.TestCase):
     self.control.actuators.longControlState = "stopping"
     self.state.out.standstill = True
     self.state.out.cruiseState.standstill = True
-    self.assertEqual(self.update(-2.), (0xd, -200.))
+    self.assertEqual(self.update(-2.), (0xd, -2))
 
   def test_disabled_helper_cannot_force_active_zero_demand(self):
-    message = gmcan.create_friction_brake_command(self.controller.packer_ch, CanBus.CHASSIS, 0, 0,
-                                                 False, True, False, self.controller.CP, brake_active=True)
+    mode = gmcan.friction_brake_mode(False, False, True, True, False, self.controller.CP)
+    self.assertEqual(mode, 0x1)
+    message = gmcan.create_friction_brake_command(self.controller.packer_ch, CanBus.CHASSIS, 0, 0, mode)
     self.assertEqual(message[1][0] >> 4, 0x1)
+
+  def test_frame_encodes_the_signed_request_and_its_checksum(self):
+    for accel, counts in ((-4., -400), (-1.1, -110), (-0.01, -1), (0., 0), (0.01, 1), (0.32, 32), (2., 200), (-1.16, -116)):
+      data = gmcan.create_friction_brake_command(self.controller.packer_ch, CanBus.OBSTACLE, accel, 2, 0xa)[1]
+      raw = ((data[0] & 0xf) << 8) | data[1]
+      self.assertEqual(raw, counts & 0xfff)
+      self.assertEqual(raw - 0x1000 if raw >= 0x800 else raw, counts)
+      self.assertEqual(int.from_bytes(data[2:4], "big"), (0x10000 - (0xa << 12) - raw - 2) & 0xffff)
+
+  def test_legacy_lookup_is_byte_identical_to_the_pressure_era_mapping(self):
+    # platforms without ASCM_LONG keep the bytes openpilot has always sent them: the old code interpolated
+    # brake 'counts' [400 .. 0] over [ACCEL_MIN .. max regen] and negated them into the field
+    for car in (CAR.CHEVROLET_BOLT_EUV, CAR.CHEVROLET_VOLT, CAR.CADILLAC_ATS):
+      controller = make_controller(car=car, flags=0)
+      p = controller.params
+      with self.subTest(car=car):
+        for accel in np.arange(-4.5, 2.5, 0.001):
+          old_counts = int(round(np.interp(accel, p.BRAKE_LOOKUP_BP, [400., 0.])))
+          old_raw = (0x1000 - old_counts) & 0xfff
+          new_accel = float(np.interp(accel, p.BRAKE_LOOKUP_BP, p.BRAKE_LOOKUP_V))
+          data = gmcan.create_friction_brake_command(controller.packer_ch, CanBus.CHASSIS, new_accel, 0, 0xa)[1]
+          self.assertEqual(((data[0] & 0xf) << 8) | data[1], old_raw, msg=f"accel={accel:.3f}")
 
 
 if __name__ == "__main__":
@@ -341,25 +375,25 @@ class TestNearStopHold(unittest.TestCase):
 
   def test_flicker_keeps_the_hold(self):
     # longcontrol's ramp is at -1.16 when shouldStop flickers off and the PID hands over -0.05, then up to +0.14
-    self.assertEqual(self.allocate(-1.16, stopping=True), (-650., 116))
+    self.assertEqual(self.allocate(-1.16, stopping=True), (-650., -1.16))
     self.assertTrue(self.controller.stop_hold)
-    for accel, expected in ((-0.05, 5), (0.02, 0), (0.07, 0), (0.10, 0), (0.14, 0), (0.10, 0)):
+    for accel, expected in ((-0.05, -0.05), (0.02, 0.), (0.07, 0.), (0.10, 0.), (0.14, 0.), (0.10, 0.)):
       self.assertEqual(self.allocate(accel, stopping=False), (-650., expected))
       self.assertTrue(self.controller.stop_hold)
       self.assertEqual(self.controller.owner, LongOwner.BRAKE)
-    self.assertEqual(self.allocate(-0.02, stopping=True), (-650., 2))
+    self.assertEqual(self.allocate(-0.02, stopping=True), (-650., -0.02))
 
   def test_release_returns_to_ordinary_allocation(self):
     self.allocate(-2.0, stopping=True)
     # below the creep floor the brake controller keeps the request and eases it
     gas, brake = self.allocate(0.32, stopping=False)
     self.assertFalse(self.controller.stop_hold)
-    self.assertEqual((gas, brake), (-650., -32))
+    self.assertEqual((gas, brake), (-650., 0.32))
     self.assertEqual(self.controller.owner, LongOwner.BRAKE)
     # above it the powertrain takes over
     gas, brake = self.allocate(1.0, stopping=False)
     self.assertEqual(self.controller.owner, LongOwner.POWERTRAIN)
-    self.assertEqual(brake, 0)
+    self.assertEqual(brake, 0.)
     self.assertGreater(gas, 0.)
 
   def test_downhill_release_stays_with_the_brakes(self):
@@ -370,7 +404,7 @@ class TestNearStopHold(unittest.TestCase):
     self.assertFalse(self.controller.stop_hold)
     self.assertEqual(self.controller.owner, LongOwner.BRAKE)
     self.assertEqual(gas, -650.)
-    self.assertGreater(brake, 300)  # gravity supplies far more than the request; braking is the release
+    self.assertLess(brake, -3.0)  # gravity supplies far more than the request; braking is the release
 
   def test_hold_needs_a_stop_first(self):
     for accel in (0.1, -0.5, 0.2):

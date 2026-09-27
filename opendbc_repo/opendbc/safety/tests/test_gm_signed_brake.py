@@ -21,7 +21,7 @@ class TestGmSignedBrakeSafety(unittest.TestCase):
 
   def tx(self, request, mode=0xA, bus=2):
     msg = self.packer.make_can_msg_safety('EBCMFrictionBrakeCmd', bus,
-                                          {'FrictionBrakeCmd': request, 'FrictionBrakeMode': mode})
+                                          {'FrictionBrakeCmd': request * 0.01, 'FrictionBrakeMode': mode})
     return bool(self.safety.safety_tx_hook(msg))
 
   def test_entire_signed_range_modes_and_engagement_across_hardware(self):

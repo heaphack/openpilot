@@ -6,7 +6,7 @@ from opendbc.car.lateral import apply_driver_steer_torque_limits
 from opendbc.car.common.filter_simple import FirstOrderFilter
 from opendbc.car.gm import gmcan
 from opendbc.car.common.conversions import Conversions as CV
-from opendbc.car.gm.values import DBC, CanBus, CarControllerParams, CruiseButtons, LongOwner
+from opendbc.car.gm.values import DBC, CanBus, CarControllerParams, CruiseButtons, GMFlags, LongOwner
 from opendbc.car.interfaces import CarControllerBase
 
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
@@ -36,6 +36,11 @@ class CarController(CarControllerBase):
     self.lka_icon_status_last = (False, False)
 
     self.params = CarControllerParams(self.CP)
+
+    # With an ASCM interceptor harness our commands enter on the ASCM's bus and the stock ASCM stays
+    # alive, so we neither impersonate it to the radar and ADAS modules nor keep them alive ourselves.
+    self.interceptor = bool(self.CP.flags & GMFlags.ASCM_INTERCEPTOR)
+    self.cmd_bus = CanBus.OBSTACLE if self.interceptor else CanBus.POWERTRAIN
 
     self.packer_pt = CANPacker(DBC[self.CP.carFingerprint][Bus.pt])
     self.packer_obj = CANPacker(DBC[self.CP.carFingerprint][Bus.radar])
@@ -106,7 +111,7 @@ class CarController(CarControllerBase):
     # Brake hold ends with stop_hold, allowing a brake-owned launch before the wheels move.
     # 0xB while the near-stop hold is on
     near_stop = CC.longActive and self.stop_hold
-    friction_brake_bus = CanBus.CHASSIS
+    friction_brake_bus = CanBus.OBSTACLE if self.interceptor else CanBus.CHASSIS
     # GM Camera exceptions
     # TODO: can we always check the longControlState?
     if self.CP.networkLocation == NetworkLocation.fwdCamera:
@@ -122,7 +127,7 @@ class CarController(CarControllerBase):
     # Report the signed brake request after hold limiting, clipping, and CAN quantization.
     self.accel_request = brake_accel if self.owner == LongOwner.BRAKE else net
     return [
-      gmcan.create_gas_regen_command(self.packer_pt, CanBus.POWERTRAIN, gas, idx, gas_regen_active, at_full_stop),
+      gmcan.create_gas_regen_command(self.packer_pt, self.cmd_bus, gas, idx, gas_regen_active, at_full_stop),
       gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, brake_accel, idx, brake_mode),
     ]
 
@@ -146,7 +151,7 @@ class CarController(CarControllerBase):
         gas = p.INACTIVE_REGEN
 
     at_full_stop = CC.longActive and CS.out.standstill
-    friction_brake_bus = CanBus.CHASSIS
+    friction_brake_bus = CanBus.OBSTACLE if self.interceptor else CanBus.CHASSIS
     if self.CP.networkLocation == NetworkLocation.fwdCamera:
       at_full_stop = at_full_stop and stopping
       friction_brake_bus = CanBus.POWERTRAIN
@@ -155,7 +160,7 @@ class CarController(CarControllerBase):
     brake_mode = gmcan.friction_brake_mode(brake_accel < 0., CC.enabled, False, False, at_full_stop, self.CP)
     self.apply_gas, self.brake_accel, self.accel_request = gas, brake_accel, accel
     return [
-      gmcan.create_gas_regen_command(self.packer_pt, CanBus.POWERTRAIN, gas, idx, gas_regen_active, at_full_stop),
+      gmcan.create_gas_regen_command(self.packer_pt, self.cmd_bus, gas, idx, gas_regen_active, at_full_stop),
       gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, brake_accel, idx, brake_mode),
     ]
 
@@ -203,7 +208,7 @@ class CarController(CarControllerBase):
       self.last_steer_frame = self.frame
       self.apply_torque_last = apply_torque
       idx = self.lka_steering_cmd_counter % 4
-      can_sends.append(gmcan.create_steering_control(self.packer_pt, CanBus.POWERTRAIN, apply_torque, idx, CC.latActive))
+      can_sends.append(gmcan.create_steering_control(self.packer_pt, self.cmd_bus, apply_torque, idx, CC.latActive))
 
     if self.CP.openpilotLongitudinalControl:
       # Gas/regen, brakes, and UI commands - all at 25Hz
@@ -216,12 +221,12 @@ class CarController(CarControllerBase):
 
         # Send dashboard UI commands (ACC status)
         send_fcw = hud_alert == VisualAlert.fcw
-        can_sends.append(gmcan.create_acc_dashboard_command(self.packer_pt, CanBus.POWERTRAIN, CC.enabled,
+        can_sends.append(gmcan.create_acc_dashboard_command(self.packer_pt, self.cmd_bus, CC.enabled,
                                                             hud_v_cruise * CV.MS_TO_KPH, hud_control, send_fcw))
 
       # Radar needs to know current speed and yaw rate (50hz),
       # and that ADAS is alive (10hz)
-      if not self.CP.radarUnavailable:
+      if not self.CP.radarUnavailable and not self.interceptor:
         tt = self.frame * DT_CTRL
         time_and_headlights_step = 10
         if self.frame % time_and_headlights_step == 0:
@@ -235,7 +240,7 @@ class CarController(CarControllerBase):
           can_sends.append(gmcan.create_adas_steering_status(CanBus.OBSTACLE, idx))
           can_sends.append(gmcan.create_adas_accelerometer_speed_status(CanBus.OBSTACLE, abs(CS.out.vEgo), idx))
 
-      if self.CP.networkLocation == NetworkLocation.gateway and self.frame % self.params.ADAS_KEEPALIVE_STEP == 0:
+      if self.CP.networkLocation == NetworkLocation.gateway and not self.interceptor and self.frame % self.params.ADAS_KEEPALIVE_STEP == 0:
         can_sends += gmcan.create_adas_keepalive(CanBus.POWERTRAIN)
 
     else:

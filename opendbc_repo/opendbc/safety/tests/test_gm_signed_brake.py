@@ -59,6 +59,17 @@ class TestGmSignedBrakeSafety(unittest.TestCase):
       self.safety.set_controls_allowed(True)
       self.assertFalse(self.tx(200, bus=bus))
 
+  def test_interceptor_allows_obstacle_bus_with_the_same_limits(self):
+    for param in (GMSafetyFlags.ASCM_INTERCEPTOR, GMSafetyFlags.ASCM_INTERCEPTOR | GMSafetyFlags.EV):
+      self.configure(param)
+      for enabled in (False, True):
+        self.safety.set_controls_allowed(enabled)
+        for bus in (1, 2):
+          for request in (-401, -400, -1, 0, 1, 200, 201):
+            expected = request == 0 or (enabled and -400 <= request <= 200)
+            self.assertEqual(self.tx(request, bus=bus), expected, (param, enabled, bus, request))
+        self.assertFalse(self.tx(200, bus=0))
+
 
 if __name__ == "__main__":
   unittest.main()

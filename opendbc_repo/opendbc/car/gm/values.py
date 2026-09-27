@@ -154,12 +154,18 @@ class GMFlags(IntFlag):
   # acceleration request to the EBCM, and the handoff between them driven by the powertrain's reported
   # minimum axle torque (0x1C5). See CarControllerParams. Set per platform once confirmed on that car.
   ASCM_LONG = 2
+  # The car keeps its stock ASCM and openpilot sits between the ASCM and the rest of the car on the ASCM's
+  # own bus (an interceptor harness) instead of replacing the ASCM at the OBD-II gateway. openpilot's
+  # commands enter on the obstacle bus, the ASCM keeps the radar and ADAS modules alive itself, and the
+  # loopback of our own commands appears on that bus. Describes the harness, not the car.
+  ASCM_INTERCEPTOR = 4
 
 
 class GMSafetyFlags(IntFlag):
   HW_CAM = 1
   HW_CAM_LONG = 2
   EV = 4
+  ASCM_INTERCEPTOR = 8
 
 
 class Footnote(Enum):
@@ -219,7 +225,7 @@ class CAR(Platforms):
   CHEVROLET_VOLT = GMASCMPlatformConfig(
     [GMCarDocs("Chevrolet Volt 2017-18", min_enable_speed=0, video="https://youtu.be/QeMCN_4TFfQ")],
     GMCarSpecs(mass=1607, wheelbase=2.69, steerRatio=17.7, centerToFrontRatio=0.45, tireStiffnessFactor=0.469),
-    flags=GMFlags.ASCM_LONG,
+    flags=GMFlags.ASCM_LONG | GMFlags.ASCM_INTERCEPTOR,
   )
   CADILLAC_ATS = GMASCMPlatformConfig(
     [GMCarDocs("Cadillac ATS Premium Performance 2018")],

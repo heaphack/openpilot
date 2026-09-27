@@ -167,6 +167,32 @@ class TestGmAscmEVSafety(TestGmAscmSafety, TestGmEVSafetyBase):
   pass
 
 
+class TestGmAscmInterceptorSafety(TestGmAscmSafety):
+  # commands may also go out on the obstacle bus, and the stock ASCM's own pt-bus messages are not a relay fault
+  TX_MSGS = TestGmAscmSafety.TX_MSGS + [[0x180, 1], [0x2CB, 1], [0x370, 1], [0x315, 1]]
+  RELAY_MALFUNCTION_ADDRS: dict[int, tuple[int, ...]] = {}
+  BRAKE_BUS = 1
+
+  def setUp(self):
+    from opendbc.safety.tests.libsafety import libsafety_py
+
+    self.packer = CANPackerSafety("gm_global_a_powertrain_generated")
+    self.packer_chassis = CANPackerSafety("gm_global_a_chassis")
+    self.safety = libsafety_py.libsafety
+    self.safety.set_safety_hooks(CarParams.SafetyModel.gm, GMSafetyFlags.ASCM_INTERCEPTOR | self.EXTRA_SAFETY_PARAM)
+    self.safety.init_tests()
+
+  def test_brake_on_chassis_bus_still_checked(self):
+    self.safety.set_controls_allowed(True)
+    for brake, allowed in ((0, True), (400, True), (401, False)):
+      values = {"FrictionBrakeCmd": -brake * 0.01}
+      self.assertEqual(allowed, self._tx(self.packer_chassis.make_can_msg_safety("EBCMFrictionBrakeCmd", 2, values)))
+
+
+class TestGmAscmInterceptorEVSafety(TestGmAscmInterceptorSafety, TestGmEVSafetyBase):
+  pass
+
+
 class TestGmCameraSafetyBase(TestGmSafetyBase):
   def _user_brake_msg(self, brake):
     values = {"BrakePressed": brake}

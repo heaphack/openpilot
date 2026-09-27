@@ -7,7 +7,7 @@ from opendbc.can import CANParser
 from opendbc.car import Bus, structs, ACCELERATION_DUE_TO_GRAVITY
 from opendbc.car.gm import gmcan
 from opendbc.car.gm.carcontroller import CarController
-from opendbc.car.gm.values import CAR, DBC, CanBus, LongOwner
+from opendbc.car.gm.values import CAR, DBC, CanBus, GMFlags, LongOwner
 
 
 def make_controller(car=CAR.CHEVROLET_VOLT, network="gateway", flags=None):
@@ -240,11 +240,13 @@ class TestPowertrainTorqueFloor(unittest.TestCase):
 
 
 class TestVoltCreepCAN(unittest.TestCase):
+  BRAKE_BUS = CanBus.OBSTACLE  # the Volt platform carries the interceptor flag
+
   def setUp(self):
     self.controller = make_controller()
     self.state = make_state()
     self.control = make_control()
-    self.parser = CANParser(DBC[CAR.CHEVROLET_VOLT][Bus.chassis], [("EBCMFrictionBrakeCmd", 25)], CanBus.CHASSIS)
+    self.parser = CANParser(DBC[CAR.CHEVROLET_VOLT][Bus.chassis], [("EBCMFrictionBrakeCmd", 25)], self.BRAKE_BUS)
     self.tick = 0
 
   def update(self, accel):
@@ -321,8 +323,33 @@ class TestVoltCreepCAN(unittest.TestCase):
     self.control.actuators.longControlState = "pid"
     self.assertEqual(self.update(-0.3), (0xb, -0.3))
 
+  def test_interceptor_routes_commands_to_the_ascm_bus_and_leaves_adas_alone(self):
+    self.control.latActive = True
+    self.controller.frame = 12  # a frame where the steering, 25 Hz longitudinal and ADAS messages are all due
+    _, messages = self.controller.update(self.control.as_reader(), self.state, 1_000_000_000)
+    by_addr = {(m[0], m[2]) for m in messages}
+    for addr in (0x180, 0x2CB, 0x315, 0x370):
+      self.assertTrue((addr, CanBus.OBSTACLE) in by_addr, hex(addr))
+      self.assertNotIn((addr, CanBus.POWERTRAIN), by_addr, hex(addr))
+      self.assertNotIn((addr, CanBus.CHASSIS), by_addr, hex(addr))
+    # no ADAS impersonation or keepalive: the stock ASCM is still on the car
+    for addr in (0xA1, 0x306, 0x308, 0x310, 0x409, 0x40A):
+      self.assertNotIn(addr, {m[0] for m in messages}, hex(addr))
+
+  def test_without_interceptor_commands_stay_on_the_car_buses(self):
+    self.controller = make_controller(flags=GMFlags.ASCM_LONG)
+    self.control.latActive = True
+    self.controller.frame = 12  # a frame where the steering, 25 Hz longitudinal and ADAS messages are all due
+    _, messages = self.controller.update(self.control.as_reader(), self.state, 1_000_000_000)
+    by_addr = {(m[0], m[2]) for m in messages}
+    for addr in (0x180, 0x2CB, 0x370):
+      self.assertTrue((addr, CanBus.POWERTRAIN) in by_addr, hex(addr))
+    self.assertTrue((0x315, CanBus.CHASSIS) in by_addr)
+    self.assertTrue(0x306 in {m[0] for m in messages})  # ADAS steering status on the obstacle bus
+
   def test_other_platforms_keep_lookup_allocation(self):
     self.controller = make_controller(CAR.CHEVROLET_MALIBU)
+    self.parser = CANParser(DBC[CAR.CHEVROLET_MALIBU][Bus.chassis], [("EBCMFrictionBrakeCmd", 25)], CanBus.CHASSIS)
     self.assertFalse(self.controller.params.ASCM_LONG)
     mode, demand = self.update(-0.3)
     self.assertEqual(mode, 0xa)
@@ -351,7 +378,7 @@ class TestVoltCreepCAN(unittest.TestCase):
     self.assertEqual(self.controller.owner, LongOwner.POWERTRAIN)
 
   def test_near_stop_mode_is_volt_only(self):
-    self.controller = make_controller(flags=0)  # no two-owner allocation: the lookup tables and plain 0xA
+    self.controller = make_controller(flags=GMFlags.ASCM_INTERCEPTOR)  # interceptor bus, no two-owner allocation
     self.control.actuators.longControlState = "stopping"
     self.assertEqual(self.update(-2.0)[0], 0xa)  # the lookup tables brake here; no near-stop submode
 
@@ -391,7 +418,7 @@ class TestVoltCreepCAN(unittest.TestCase):
         self.assertEqual(self.gas_regen(messages)[:2], (1, 1))
 
   def gas_regen(self, messages):
-    parser = CANParser(DBC[CAR.CHEVROLET_VOLT][Bus.pt], [("ASCMGasRegenCmd", 25)], CanBus.POWERTRAIN)
+    parser = CANParser(DBC[CAR.CHEVROLET_VOLT][Bus.pt], [("ASCMGasRegenCmd", 25)], self.controller.cmd_bus)
     parser.update([[0, messages]])
     v = parser.vl["ASCMGasRegenCmd"]
     return int(v["GasRegenCmdActive"]), int(v["GasRegenFullStopActive"]), v["GasRegenCmd"]
@@ -409,7 +436,7 @@ class TestVoltCreepCAN(unittest.TestCase):
   def test_disabled_helper_cannot_force_active_zero_demand(self):
     mode = gmcan.friction_brake_mode(False, False, True, True, False, self.controller.CP)
     self.assertEqual(mode, 0x1)
-    message = gmcan.create_friction_brake_command(self.controller.packer_ch, CanBus.CHASSIS, 0, 0, mode)
+    message = gmcan.create_friction_brake_command(self.controller.packer_ch, CanBus.OBSTACLE, 0, 0, mode)
     self.assertEqual(message[1][0] >> 4, 0x1)
 
   def test_frame_encodes_the_signed_request_and_its_checksum(self):

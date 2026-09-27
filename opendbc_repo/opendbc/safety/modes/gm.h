@@ -156,6 +156,7 @@ static bool gm_tx_hook(const CANPacket_t *msg) {
 static safety_config gm_init(uint16_t param) {
   const uint16_t GM_PARAM_HW_CAM = 1;
   const uint16_t GM_PARAM_EV = 4;
+  const uint16_t GM_PARAM_ASCM_INTERCEPTOR = 8;
 
   // common safety checks assume unscaled integer values
   static const int GM_GAS_TO_CAN = 8;  // 1 / 0.125
@@ -174,6 +175,14 @@ static safety_config gm_init(uint16_t param) {
   static const CanMsg GM_ASCM_TX_MSGS[] = {{0x180, 0, 4, .check_relay = true}, {0x409, 0, 7, .check_relay = false}, {0x40A, 0, 7, .check_relay = false}, {0x2CB, 0, 8, .check_relay = true}, {0x370, 0, 6, .check_relay = false},  // pt bus
                                            {0xA1, 1, 7, .check_relay = false}, {0x306, 1, 8, .check_relay = false}, {0x308, 1, 7, .check_relay = false}, {0x310, 1, 2, .check_relay = false},   // obs bus
                                            {0x315, 2, 5, .check_relay = false}};  // ch bus
+
+  // ASCM interceptor harness: the stock ASCM stays on the car and keeps transmitting on the pt bus, so its
+  // messages must not trip the relay check, and openpilot's commands enter on the ASCM's own (obstacle) bus.
+  static const CanMsg GM_ASCM_INTERCEPTOR_TX_MSGS[] = {{0x180, 0, 4, .check_relay = false}, {0x409, 0, 7, .check_relay = false}, {0x40A, 0, 7, .check_relay = false},
+                                                       {0x2CB, 0, 8, .check_relay = false}, {0x370, 0, 6, .check_relay = false},  // pt bus
+                                                       {0xA1, 1, 7, .check_relay = false}, {0x306, 1, 8, .check_relay = false}, {0x308, 1, 7, .check_relay = false}, {0x310, 1, 2, .check_relay = false},  // obs bus
+                                                       {0x180, 1, 4, .check_relay = false}, {0x2CB, 1, 8, .check_relay = false}, {0x370, 1, 6, .check_relay = false}, {0x315, 1, 5, .check_relay = false},  // obs bus, commands
+                                                       {0x315, 2, 5, .check_relay = false}};  // ch bus
 
 
   static const LongitudinalLimits GM_CAM_LONG_LIMITS = {
@@ -229,6 +238,9 @@ static safety_config gm_init(uint16_t param) {
 #endif
   } else {
     ret = BUILD_SAFETY_CFG(gm_rx_checks, GM_ASCM_TX_MSGS);
+    if (GET_FLAG(param, GM_PARAM_ASCM_INTERCEPTOR)) {
+      ret = BUILD_SAFETY_CFG(gm_rx_checks, GM_ASCM_INTERCEPTOR_TX_MSGS);
+    }
   }
 
   const bool gm_ev = GET_FLAG(param, GM_PARAM_EV);

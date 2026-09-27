@@ -135,6 +135,12 @@ class CarInterface(CarInterfaceBase):
       # Tuning
       ret.longitudinalTuning.kiV = [2.4, 1.5]
 
+      if ret.flags & GMFlags.ASCM_INTERCEPTOR:
+        # openpilot's commands enter on the ASCM's bus and the stock ASCM stays alive (see CarController)
+        ret.safetyConfigs[0].safetyParam |= GMSafetyFlags.ASCM_INTERCEPTOR.value
+        # the stock ASCM keeps the ECM's ACC state healthy through a stop, so engaging at a crawl is fine
+        ret.minEnableSpeed = 3 * CV.MPH_TO_MS
+
     # These cars have been put into dashcam only due to both a lack of users and test coverage.
     # These cars likely still work fine. Once a user confirms each car works and a test route is
     # added to opendbc/car/tests/routes.py, we can remove it from this list.

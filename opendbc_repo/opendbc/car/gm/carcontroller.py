@@ -103,6 +103,7 @@ class CarController(CarControllerBase):
         gas = p.MAX_ACC_REGEN
 
     at_full_stop = CC.longActive and CS.out.standstill
+    # Brake hold ends with stop_hold, allowing a brake-owned launch before the wheels move.
     # 0xB while the near-stop hold is on
     near_stop = CC.longActive and self.stop_hold
     friction_brake_bus = CanBus.CHASSIS
@@ -115,7 +116,7 @@ class CarController(CarControllerBase):
     # GasRegenCmdActive needs to be 1 to avoid cruise faults. It describes the ACC state, not actuation
     gas_regen_active = CC.enabled
     brake_mode = gmcan.friction_brake_mode(brake_accel < 0., CC.enabled,
-                                           CC.longActive and self.owner == LongOwner.BRAKE, near_stop, at_full_stop, self.CP)
+                                           CC.longActive and self.owner == LongOwner.BRAKE, near_stop, at_full_stop and self.stop_hold, self.CP)
     self.apply_gas, self.brake_accel, self.accel_request = gas, brake_accel, net
     return [
       gmcan.create_gas_regen_command(self.packer_pt, CanBus.POWERTRAIN, gas, idx, gas_regen_active, at_full_stop),

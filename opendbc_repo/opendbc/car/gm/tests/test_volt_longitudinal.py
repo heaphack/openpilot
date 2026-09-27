@@ -324,6 +324,35 @@ class TestVoltCreepCAN(unittest.TestCase):
     self.state.out.cruiseState.standstill = True
     self.assertEqual(self.update(-2.), (0xd, -2))
 
+  def test_manual_resume_releases_brake_hold_before_wheel_motion(self):
+    for grade, accel, owner, mode in ((0., 0.5, LongOwner.BRAKE, 0xa),
+                                      (-0.05, 0.5, LongOwner.BRAKE, 0xa),
+                                      (-0.15, 0.5, LongOwner.BRAKE, 0xa),
+                                      (0., 1., LongOwner.POWERTRAIN, 0x1)):
+      with self.subTest(grade=grade, accel=accel):
+        self.controller = make_controller()
+        self.controller.CP.autoResumeSng = False
+        self.state = make_state(speed=0., minimum=8., standstill=True, cruise_standstill=True)
+        self.control = make_control()
+        self.controller.pitch.x = math.atan(grade)
+        self.control.actuators.longControlState = "stopping"
+        self.assertEqual(self.update(-2.)[0], 0xd)
+        # Until longcontrol authorizes a launch, the stopping state keeps the hold.
+        self.assertEqual(self.update(accel)[0], 0xd)
+        self.state.out.cruiseState.standstill = False  # driver resume acknowledged by the ECM
+        self.control.actuators.longControlState = "pid"
+        # A brief cancellation or weak request must not release the stop latch.
+        self.assertEqual(self.update(0.1)[0], 0xd)
+        self.assertTrue(self.controller.stop_hold)
+        self.assertEqual(self.update(accel)[0], mode)
+        self.assertFalse(self.controller.stop_hold)
+        self.assertEqual(self.controller.owner, owner)
+        self.assertTrue(self.state.out.standstill)
+        self.controller.frame = self.tick * 4
+        _, messages = self.controller.update(self.control.as_reader(), self.state, 0)
+        # Brake hold release does not alter the gateway powertrain handshake.
+        self.assertEqual(self.gas_regen(messages)[:2], (1, 1))
+
   def gas_regen(self, messages):
     parser = CANParser(DBC[CAR.CHEVROLET_VOLT][Bus.pt], [("ASCMGasRegenCmd", 25)], CanBus.POWERTRAIN)
     parser.update([[0, messages]])

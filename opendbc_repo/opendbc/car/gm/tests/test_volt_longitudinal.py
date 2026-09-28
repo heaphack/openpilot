@@ -448,13 +448,13 @@ class TestVoltCreepCAN(unittest.TestCase):
         self.controller.frame = self.tick * 4
         _, messages = self.controller.update(self.control.as_reader(), self.state, 0)
         # Brake hold release does not alter the gateway powertrain handshake.
-        self.assertEqual(self.gas_regen(messages)[:2], (1, 1))
+        self.assertEqual(self.powertrain_command(messages)[:2], (1, 1))
 
-  def gas_regen(self, messages):
-    parser = CANParser(DBC[CAR.CHEVROLET_VOLT][Bus.pt], [("ASCMGasRegenCmd", 25)], self.controller.cmd_bus)
+  def powertrain_command(self, messages):
+    parser = CANParser(DBC[CAR.CHEVROLET_VOLT][Bus.pt], [("ACCPowertrainCmd", 25)], self.controller.cmd_bus)
     parser.update([[0, messages]])
-    v = parser.vl["ASCMGasRegenCmd"]
-    return int(v["GasRegenCmdActive"]), int(v["GasRegenFullStopActive"]), v["GasRegenCmd"]
+    v = parser.vl["ACCPowertrainCmd"]
+    return int(v["ACCActive"]), int(v["ACCFullStopActive"]), v["AxleTorqueCmd"]
 
   def test_auto_resume_clears_the_ecm_standstill_latch(self):
     # stopped, ECM in ACC standstill: hold with the standstill submode and the ACC request asserted
@@ -464,7 +464,7 @@ class TestVoltCreepCAN(unittest.TestCase):
     self.assertEqual(self.update(-2.0)[0], 0xd)
     self.controller.frame = self.tick * 4
     _, msgs = self.controller.update(self.control.as_reader(), self.state, 0)
-    self.assertEqual(self.gas_regen(msgs)[:2], (1, 1))
+    self.assertEqual(self.powertrain_command(msgs)[:2], (1, 1))
     # openpilot wants to move while the ECM still reports standstill: drive torque, no brake request, and the
     # ACC-active bit dropped so the ECM leaves standstill. The powertrain owns the request once it has climbed
     # out of the stopping ramp (STOPPING_EXIT_RATE).
@@ -475,7 +475,7 @@ class TestVoltCreepCAN(unittest.TestCase):
         break
     self.controller.frame = self.tick * 4
     _, msgs = self.controller.update(self.control.as_reader(), self.state, 0)
-    active, full_stop, gas = self.gas_regen(msgs)
+    active, full_stop, gas = self.powertrain_command(msgs)
     self.assertEqual((active, full_stop), (0, 0))
     self.assertGreater(gas, 0.)
     self.assertEqual(self.controller.long_owner, LongOwner.POWERTRAIN)
@@ -485,7 +485,7 @@ class TestVoltCreepCAN(unittest.TestCase):
     self.update(0.5)
     self.controller.frame = self.tick * 4
     _, msgs = self.controller.update(self.control.as_reader(), self.state, 0)
-    self.assertEqual(self.gas_regen(msgs)[:2], (1, 0))
+    self.assertEqual(self.powertrain_command(msgs)[:2], (1, 0))
 
   def test_no_auto_resume_keeps_the_acc_request_asserted(self):
     self.controller = make_controller(auto_resume=False)
@@ -494,7 +494,7 @@ class TestVoltCreepCAN(unittest.TestCase):
     self.update(0.5)
     self.controller.frame = self.tick * 4
     _, msgs = self.controller.update(self.control.as_reader(), self.state, 0)
-    self.assertEqual(self.gas_regen(msgs)[:2], (1, 1))
+    self.assertEqual(self.powertrain_command(msgs)[:2], (1, 1))
 
   def test_disengagement_clears_hold_and_uses_platform_idle_mode(self):
     def command(accel):

@@ -124,16 +124,16 @@ static bool gm_tx_hook(const CANPacket_t *msg) {
     }
   }
 
-  // GAS/REGEN: safety check
+  // ACC POWERTRAIN: axle torque safety check
   if (msg->addr == 0x2CBU) {
-    bool apply = GET_BIT(msg, 0U);
-    // convert float CAN signal to an int for gas checks: 22534 / 0.125 = 180272
-    int gas_regen = (((msg->data[1] & 0x7U) << 16) | (msg->data[2] << 8) | msg->data[3]) - 180272U;
+    bool powertrain_acc_active = GET_BIT(msg, 0U);
+    // Remove the DBC offset; safety limits use 0.125 Nm counts: 22534 / 0.125 = 180272
+    int axle_torque_cmd_counts = (((msg->data[1] & 0x7U) << 16) | (msg->data[2] << 8) | msg->data[3]) - 180272U;
 
     bool violation = false;
-    // Allow apply bit in pre-enabled and overriding states
-    violation |= !controls_allowed && apply;
-    violation |= longitudinal_gas_checks(gas_regen, *gm_long_limits);
+    // Check the ACC-active flag separately from the torque magnitude.
+    violation |= !controls_allowed && powertrain_acc_active;
+    violation |= longitudinal_gas_checks(axle_torque_cmd_counts, *gm_long_limits);
 
     if (violation) {
       tx = false;

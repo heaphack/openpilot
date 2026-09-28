@@ -46,8 +46,8 @@ VAL_TABLE_ DoorStatus 1 "Opened" 0 "Closed" ;
 VAL_TABLE_ SeatBeltStatus 1 "Latched" 0 "Unlatched" ;
 VAL_TABLE_ LKASteeringCmdActive 1 "Active" 0 "Inactive" ;
 VAL_TABLE_ ACCGapLevel 3 "Far" 2 "Med" 1 "Near" 0 "Inactive" ;
-VAL_TABLE_ GasRegenCmdActiveInv 1 "Inactive" 0 "Active" ;
-VAL_TABLE_ GasRegenCmdActive 1 "Active" 0 "Inactive" ;
+VAL_TABLE_ ACCActiveInv 1 "Inactive" 0 "Active" ;
+VAL_TABLE_ ACCActive 1 "Active" 0 "Inactive" ;
 VAL_TABLE_ LKATorqueDeliveredStatus 3 "Failed" 2 "Temp. Limited" 1 "Active" 0 "Inactive" ;
 VAL_TABLE_ HandsOffSWDetectionStatus 1 "Hands On" 0 "Hands Off" ;
 VAL_TABLE_ HandsOffSWDetectionMode 2 "Failed" 1 "Enabled" 0 "Disabled" ;
@@ -154,17 +154,17 @@ BO_ 711 BECMBatteryVoltageCurrent: 6 K17_EBCM
  SG_ HVBatteryVoltage : 31|12@0+ (0.125,0) [0|511.875] "V"  NEO
  SG_ HVBatteryCurrent : 12|13@0- (0.15,0) [-614.4|614.25] "A"  NEO
 
-BO_ 715 ASCMGasRegenCmd: 8 K124_ASCM
- SG_ GasRegenAlwaysOne : 9|1@0+ (1,1) [1|1] ""  NEO
- SG_ GasRegenAlwaysThree : 15|2@0+ (1,1) [1|1] ""  NEO
- SG_ GasRegenChecksum : 47|24@0+ (1,0) [0|0] ""  NEO
- SG_ GasRegenCmdActiveInv : 32|1@0+ (1,0) [0|0] ""  NEO
- SG_ GasRegenFullStopActive : 13|1@0+ (1,0) [0|0] ""  NEO
- SG_ GasRegenCmdActive : 0|1@0+ (1,0) [0|0] ""  NEO
+BO_ 715 ACCPowertrainCmd: 8 K124_ASCM
+ SG_ ACCPowertrainAlwaysOne : 9|1@0+ (1,1) [1|1] ""  NEO
+ SG_ ACCPowertrainAlwaysThree : 15|2@0+ (1,1) [1|1] ""  NEO
+ SG_ ACCPowertrainChecksum : 47|24@0+ (1,0) [0|0] ""  NEO
+ SG_ ACCActiveInv : 32|1@0+ (1,0) [0|0] ""  NEO
+ SG_ ACCFullStopActive : 13|1@0+ (1,0) [0|0] ""  NEO
+ SG_ ACCActive : 0|1@0+ (1,0) [0|0] ""  NEO
  SG_ RollingCounter : 7|2@0+ (1,0) [0|0] ""  NEO
  SG_ RollingCounter2 : 36|4@0+ (1,0) [0|0] ""  NEO
- SG_ GasRegenAlwaysOne2 : 23|1@0+ (1,0) [0|1] ""  NEO
- SG_ GasRegenCmd : 22|15@0+ (1,0) [0|0] ""  NEO
+ SG_ ACCPowertrainAlwaysOne2 : 23|1@0+ (1,0) [0|1] ""  NEO
+ SG_ AxleTorqueCmd : 22|15@0+ (1,0) [0|0] ""  NEO
 
 BO_ 810 TCICOnStarGPSPosition: 8 K73_TCIC
  SG_ GPSLongitude : 39|32@0+ (1,-2147483648) [0|0] "milliarcsecond"  NEO
@@ -244,5 +244,5 @@ VAL_ 880 ACCResumeButton 1 "Pressed" 0 "Depressed" ;
 VAL_ 880 ACCCmdActive 1 "Active" 0 "Inactive" ;
 VAL_ 356 LKATorqueDeliveredStatus 7 "Override Fault" 6 "LKAS Fault but Responsive" 5 "TBD but Responsive" 4 "TBD but Responsive" 3 "Fault" 1 "Active" 0 "Inactive" ;
 VAL_ 489 BrakePedalPressed 1 "Pressed" 0 "Depressed" ;
-VAL_ 715 GasRegenCmdActiveInv 1 "Inactive" 0 "Active" ;
-VAL_ 715 GasRegenCmdActive 1 "Active" 0 "Inactive" ;
+VAL_ 715 ACCActiveInv 1 "Inactive" 0 "Active" ;
+VAL_ 715 ACCActive 1 "Active" 0 "Inactive" ;

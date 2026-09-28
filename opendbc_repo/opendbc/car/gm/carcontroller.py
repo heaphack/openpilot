@@ -61,7 +61,7 @@ class CarController(CarControllerBase):
       self.pitch_filter.update(CC.orientationNED[1])
 
   def update_ascm_longitudinal(self, CC, CS, idx):
-    """Build the gas/regen and brake commands using the ASCM-inspired allocation, at 25 Hz."""
+    """Build the ACC powertrain and brake commands using the ASCM-inspired allocation, at 25 Hz."""
     p = self.params
     v = CS.out.vEgo
     vehicle_accel_request = CC.actuators.accel
@@ -115,12 +115,12 @@ class CarController(CarControllerBase):
       at_full_stop = at_full_stop and stopping
       friction_brake_bus = CanBus.POWERTRAIN
 
-    # GasRegenCmdActive needs to be 1 to avoid cruise faults. It describes the ACC state, not actuation
-    gas_regen_active = CC.enabled
+    # ACCActive needs to be 1 to avoid cruise faults. It describes the ACC state, not actuation
+    powertrain_acc_active = CC.enabled
     if self.CP.autoResumeSng:
       # The ECM latches its ACC standstill state at a stop and holds it until the ACC request is
       # re-asserted. Once openpilot wants to move again (the near-stop hold released), drop
-      # GasRegenCmdActive for the frames the ECM still reports standstill: it clears the latch and the car
+      # ACCActive for the frames the ECM still reports standstill: it clears the latch and the car
       # pulls away without a driver resume. The standstill submode (0xD) is keyed on the same ECM state so
       # the brake hold is only released when the resume is actually under way. Whichever controller owns
       # the request then carries it: drive torque, or an eased brake request on a downhill.
@@ -128,7 +128,7 @@ class CarController(CarControllerBase):
                           not CS.out.brakePressed)
       at_full_stop = CC.longActive and CS.cruise_standstill and not resume_from_stop
       if resume_from_stop:
-        gas_regen_active = False
+        powertrain_acc_active = False
 
     brake_control_active = self.long_owner == LongOwner.BRAKE
     brake_idle_mode = 0x9 if CC.enabled and self.CP.carFingerprint == CAR.CHEVROLET_BOLT_EUV else 0x1
@@ -139,12 +139,12 @@ class CarController(CarControllerBase):
     # Report the signed brake request after hold limiting, clipping, and CAN quantization.
     self.reported_accel = brake_accel_cmd if self.long_owner == LongOwner.BRAKE else grade_compensated_accel
     return [
-      gmcan.create_gas_regen_command(self.packer_pt, self.cmd_bus, axle_torque_cmd, idx, gas_regen_active, at_full_stop),
+      gmcan.create_acc_powertrain_command(self.packer_pt, self.cmd_bus, axle_torque_cmd, idx, powertrain_acc_active, at_full_stop),
       gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, brake_accel_cmd, idx, brake_mode),
     ]
 
   def update_legacy_longitudinal(self, CC, CS, idx):
-    """Build the gas/regen and brake commands using the existing lookup tables, at 25 Hz."""
+    """Build the ACC powertrain and brake commands using the existing lookup tables, at 25 Hz."""
     p = self.params
     vehicle_accel_request = CC.actuators.accel
     stopping = CC.actuators.longControlState == LongCtrlState.stopping
@@ -168,20 +168,20 @@ class CarController(CarControllerBase):
       at_full_stop = at_full_stop and stopping
       friction_brake_bus = CanBus.POWERTRAIN
 
-    gas_regen_active = CC.enabled
+    powertrain_acc_active = CC.enabled
     if self.CP.autoResumeSng:
       # Preserve the existing resume behavior for a legacy configuration with auto-resume enabled.
       resume_from_stop = CC.longActive and CS.cruise_standstill and not CS.out.brakePressed
       at_full_stop = CC.longActive and CS.cruise_standstill and not resume_from_stop
       if resume_from_stop:
-        gas_regen_active = False
+        powertrain_acc_active = False
 
     brake_control_active = brake_accel_cmd < 0.
     brake_idle_mode = 0x9 if CC.enabled and self.CP.carFingerprint == CAR.CHEVROLET_BOLT_EUV else 0x1
     brake_mode = gmcan.select_friction_brake_mode(brake_control_active, False, at_full_stop, brake_idle_mode)
     self.axle_torque_cmd, self.brake_accel_cmd, self.reported_accel = axle_torque_cmd, brake_accel_cmd, vehicle_accel_request
     return [
-      gmcan.create_gas_regen_command(self.packer_pt, self.cmd_bus, axle_torque_cmd, idx, gas_regen_active, at_full_stop),
+      gmcan.create_acc_powertrain_command(self.packer_pt, self.cmd_bus, axle_torque_cmd, idx, powertrain_acc_active, at_full_stop),
       gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, brake_accel_cmd, idx, brake_mode),
     ]
 
@@ -233,7 +233,7 @@ class CarController(CarControllerBase):
       can_sends.append(gmcan.create_steering_command(self.packer_pt, self.cmd_bus, steer_torque_cmd, idx, CC.latActive))
 
     if self.CP.openpilotLongitudinalControl:
-      # Gas/regen, brakes, and UI commands - all at 25Hz
+      # Powertrain, brakes, and UI commands - all at 25Hz
       if self.frame % 4 == 0:
         idx = (self.frame // 4) % 4
         if self.params.ASCM_LONG:

@@ -52,22 +52,22 @@ def create_adas_keepalive(bus):
   return [CanData(0x409, dat, bus), CanData(0x40a, dat, bus)]
 
 
-def create_gas_regen_command(packer, bus, axle_torque_cmd, idx, enabled, at_full_stop):
+def create_acc_powertrain_command(packer, bus, axle_torque_cmd, idx, powertrain_acc_active, at_full_stop):
   values = {
-    "GasRegenCmdActive": enabled,
+    "ACCActive": powertrain_acc_active,
     "RollingCounter": idx,
-    "GasRegenCmd": axle_torque_cmd,
-    "GasRegenFullStopActive": at_full_stop,
-    "GasRegenAccType": 1,
+    "AxleTorqueCmd": axle_torque_cmd,
+    "ACCFullStopActive": at_full_stop,
+    "ACCType": 1,
   }
 
-  dat = packer.make_can_msg("ASCMGasRegenCmd", bus, values)[1]
-  values["GasRegenChecksum"] = ((1 - enabled) << 24) | \
+  dat = packer.make_can_msg("ACCPowertrainCmd", bus, values)[1]
+  values["ACCPowertrainChecksum"] = ((1 - powertrain_acc_active) << 24) | \
                                (((0xff - dat[1]) & 0xff) << 16) | \
                                (((0xff - dat[2]) & 0xff) << 8) | \
                                ((0x100 - dat[3] - idx) & 0xff)
 
-  return packer.make_can_msg("ASCMGasRegenCmd", bus, values)
+  return packer.make_can_msg("ACCPowertrainCmd", bus, values)
 
 
 def select_friction_brake_mode(brake_control_active, stopping_mode_requested, at_full_stop, brake_idle_mode):

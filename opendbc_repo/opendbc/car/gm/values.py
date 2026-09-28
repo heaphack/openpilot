@@ -142,8 +142,8 @@ class CarControllerParams:
 
 
 class LongOwner(IntEnum):
-  POWERTRAIN = 0   # GasRegenCmd carries the request (drive or regen), EBCM idle
-  BRAKE = 1        # GasRegenCmd pinned at max regen, EBCM carries the signed request
+  POWERTRAIN = 0   # AxleTorqueCmd carries the request (drive or regen), EBCM idle
+  BRAKE = 1        # AxleTorqueCmd pinned at max regen, EBCM carries the signed request
 
 
 class GMFlags(IntFlag):

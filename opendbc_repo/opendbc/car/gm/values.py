@@ -34,37 +34,34 @@ class CarControllerParams:
   ACCEL_MIN = -4.  # m/s^2
 
   # ---- GMFlags.ASCM_LONG: two-owner longitudinal allocation ----
-  # The lookup tables below treat EBCMFrictionBrakeCmd as a brake pressure. It is a signed acceleration
-  # request, and the EBCM blends regen and friction itself to meet it. With the flag set, the acceleration
-  # request is given to one of two owners (LongOwner) instead of both lookups at once:
-  #   POWERTRAIN: GasRegenCmd = vehicle-model feedforward T(a, v) below, EBCM idle (FrictionBrakeMode 0x1)
-  #   BRAKE:      GasRegenCmd = fixed max ACC regen (-650 Nm), EBCM gets the whole request as a signed
-  #               0.01 m/s^2 acceleration with the brake path active (mode 0xA)
-  # The brake controller takes the request when the net effort (after grade) drops below the minimum axle
-  # torque available after brake release (0x1C5 AxleTorqueMin plus a Volt creep estimate) and hands it
-  # back with hysteresis. While it owns the request, a zero request holds the
-  # pressure already applied, so the request may go slightly positive to release it. Confirmed on the Volt;
-  # 0x1C5 is a Global A powertrain message present on every GM platform, so other ASCM cars are expected to
-  # work once the vehicle-model constants below are set for them.
-  #
-  # Feedforward: T[Nm] = (M*(a + G_CRR) + CD*v^2) * R, then x(1/EFF) for drive torque, xEFF for regen.
-  FF_MASS = 1776.          # kg, fixed; includes a typical load on top of the curb weight
-  FF_G_CRR = 0.0785        # m/s^2, rolling resistance as an acceleration (coefficient 0.008 x g)
-  FF_CD = 0.25             # N per (m/s)^2, aerodynamic drag
-  FF_R = 0.3234            # m, effective tire radius (2032 mm rolling circumference / 2 pi)
-  FF_EFF = 0.88            # drivetrain efficiency: divide for drive torque, multiply for regen
+  # EBCMFrictionBrakeCmd carries signed acceleration. The legacy tables request powertrain torque and
+  # braking together; this allocator assigns the request to one owner (LongOwner):
+  #   POWERTRAIN: vehicle-model axle torque, with the EBCM in its platform-specific idle mode.
+  #   BRAKE:      axle torque at the negative safety limit; the EBCM receives vehicle acceleration and
+  #               blends regen and friction to meet it.
+  # Ownership compares grade-compensated acceleration with the predicted powertrain minimum after brake
+  # release, including released creep, with hysteresis. A zero EBCM request keeps acceleration control
+  # enabled; it does not command zero or constant pressure. Positive requests can ease retained braking.
+  # The creep fit and vehicle-model parameters are for the Volt; other platforms require validation.
+
+  # Vehicle model: road-load force plus mass * acceleration, converted to axle torque with efficiency.
+  MODEL_MASS = 1776.                 # kg, includes a typical load on top of the curb weight
+  ROLLING_RESISTANCE_ACCEL = 0.0785   # m/s^2, coefficient 0.008 x g
+  AERO_DRAG_FACTOR = 0.25            # N / (m/s)^2
+  TIRE_RADIUS = 0.3234               # m, effective radius (2032 mm rolling circumference / 2 pi)
+  DRIVETRAIN_EFFICIENCY = 0.88       # divide for drive torque, multiply for regen
 
   # Owner hysteresis band around the estimated powertrain floor, m/s^2: enter the brake path a little below what the
   # powertrain can deliver, release only once the request is clearly above it.
-  BRAKE_ENTRY_MARGIN = -0.1
-  BRAKE_RELEASE_MARGIN = 0.2
+  BRAKE_ENTRY_ACCEL_MARGIN = -0.1
+  BRAKE_RELEASE_ACCEL_MARGIN = 0.2
 
   # Released-creep estimate for the Volt, fitted to actual axle torque. Speed in m/s, torque in Nm.
   CREEP_TORQUE_BP = [0., 1.44]
   # Fade the model back to the live limit before the table ends, avoiding a jump into negative regen.
   CREEP_FADE_BP = [1.10, 1.44]
 
-  # Grade: the device localizer's pitch, smoothed so brake dive and squat do not read as road slope
+  # Grade estimate: filtered localizer pitch; smoothing does not separate suspension motion from road slope.
   PITCH_FILTER_RC = 0.5           # s
 
   # ---- near-stop hold (FrictionBrakeMode 0xB) ----
@@ -79,65 +76,69 @@ class CarControllerParams:
 
   # EBCMFrictionBrakeCmd is a signed acceleration request in m/s^2 (0.01 per count). These mirror the panda's
   # [-400, +200] count envelope: a positive request only releases braking the EBCM already holds.
-  EBCM_ACCEL_MIN = -4.
-  EBCM_ACCEL_MAX = 2.
+  EBCM_ACCEL_SAFETY_MIN = -4.
+  EBCM_ACCEL_SAFETY_MAX = 2.
 
   def __init__(self, CP):
-    # Gas/brake lookups (platforms without GMFlags.ASCM_LONG)
+    # Axle torque command safety limits (Nm), shared by both allocation paths.
     if CP.carFingerprint in (CAMERA_ACC_CAR | SDGM_CAR):
-      self.MAX_GAS = 1346.0
-      self.MAX_ACC_REGEN = -540.0
-      self.INACTIVE_REGEN = -500.0
+      self.AXLE_TORQUE_SAFETY_MAX = 1346.0
+      self.AXLE_TORQUE_SAFETY_MIN = -540.0
+      self.LONG_INACTIVE_AXLE_TORQUE = -500.0
       # Camera ACC vehicles have no regen while enabled.
-      # Camera transitions to MAX_ACC_REGEN from zero gas and uses friction brakes instantly
-      max_regen_acceleration = 0.
+      # Camera transitions to AXLE_TORQUE_SAFETY_MIN from zero gas and uses friction brakes instantly
+      legacy_brake_blend_accel = 0.
 
     else:
-      self.MAX_GAS = 1018.0  # Safety limit, not ACC max. Stock ACC >2042 from standstill.
-      self.MAX_ACC_REGEN = -650.0  # Max ACC regen is slightly less than max paddle regen
-      self.INACTIVE_REGEN = -650.0
+      self.AXLE_TORQUE_SAFETY_MAX = 1018.0  # Safety limit, not ACC max. Stock ACC >2042 from standstill.
+      self.AXLE_TORQUE_SAFETY_MIN = -650.0  # Max ACC regen is slightly less than max paddle regen
+      self.LONG_INACTIVE_AXLE_TORQUE = -650.0
       # ICE has much less engine braking force compared to regen in EVs,
       # lower threshold removes some braking deadzone
-      max_regen_acceleration = -1. if CP.carFingerprint in EV_CAR else -0.1
+      legacy_brake_blend_accel = -1. if CP.carFingerprint in EV_CAR else -0.1
 
-    self.GAS_LOOKUP_BP = [max_regen_acceleration, 0., self.ACCEL_MAX]
-    self.GAS_LOOKUP_V = [self.MAX_ACC_REGEN, 0., self.MAX_GAS]
+    # Legacy mapping: acceleration breakpoints (m/s²) to axle torque (Nm).
+    # Below legacy_brake_blend_accel, torque stays at its minimum and the brake lookup adds braking.
+    self.LEGACY_AXLE_TORQUE_BP = [legacy_brake_blend_accel, 0., self.ACCEL_MAX]
+    self.LEGACY_AXLE_TORQUE_V = [self.AXLE_TORQUE_SAFETY_MIN, 0., self.AXLE_TORQUE_SAFETY_MAX]
 
     # The EBCM request as a function of the planner's acceleration, in the field's own units (m/s^2). This is
     # the mapping openpilot has always sent these platforms, written when the field was read as a brake
     # pressure (400 counts at ACCEL_MIN): it asks the EBCM for less than the planner's deceleration and adds
     # regen on the gas path at the same time. Retained unchanged until each platform is confirmed on the
     # two-owner allocation, which sends the planner's acceleration itself.
-    self.BRAKE_LOOKUP_BP = [self.ACCEL_MIN, max_regen_acceleration]
-    self.BRAKE_LOOKUP_V = [self.EBCM_ACCEL_MIN, 0.]
+    self.LEGACY_BRAKE_ACCEL_BP = [self.ACCEL_MIN, legacy_brake_blend_accel]
+    self.LEGACY_BRAKE_ACCEL_V = [self.EBCM_ACCEL_SAFETY_MIN, 0.]
 
     # two-owner allocation above instead of the lookups
     self.ASCM_LONG = bool(CP.flags & GMFlags.ASCM_LONG)
     self.CREEP_TORQUE_V = [323., 0.] if CP.carFingerprint == CAR.CHEVROLET_VOLT else [0., 0.]
 
   # ---- vehicle-model helpers ----
-  def torque_ff(self, accel, v_ego):
-    """Axle torque (Nm) needed for an accel target: mass, rolling resistance and drag, then drivetrain efficiency."""
-    t = (self.FF_MASS * (accel + self.FF_G_CRR) + self.FF_CD * v_ego * v_ego) * self.FF_R
-    return t / self.FF_EFF if t > 0 else t * self.FF_EFF
+  def accel_to_axle_torque(self, accel, v_ego):
+    """Convert grade-compensated acceleration (m/s²) to axle torque (Nm), including road loads and efficiency."""
+    t = (self.MODEL_MASS * (accel + self.ROLLING_RESISTANCE_ACCEL) + self.AERO_DRAG_FACTOR * v_ego * v_ego) * self.TIRE_RADIUS
+    return t / self.DRIVETRAIN_EFFICIENCY if t > 0 else t * self.DRIVETRAIN_EFFICIENCY
 
-  def accel_from_torque(self, torque, v_ego):
-    """Inverse of torque_ff."""
-    t = torque * self.FF_EFF if torque > 0 else torque / self.FF_EFF
-    return (t / self.FF_R - self.FF_CD * v_ego * v_ego) / self.FF_MASS - self.FF_G_CRR
+  def axle_torque_to_accel(self, torque, v_ego):
+    """Convert axle torque (Nm) to acceleration (m/s²), excluding road grade; inverse of accel_to_axle_torque."""
+    t = torque * self.DRIVETRAIN_EFFICIENCY if torque > 0 else torque / self.DRIVETRAIN_EFFICIENCY
+    return (t / self.TIRE_RADIUS - self.AERO_DRAG_FACTOR * v_ego * v_ego) / self.MODEL_MASS - self.ROLLING_RESISTANCE_ACCEL
 
-  def powertrain_torque_floor(self, axle_torque_min, valid, v_ego):
-    """Estimate minimum axle torque after brake release; the live report can fall near zero during hold.
+  def predict_minimum_powertrain_accel(self, axle_torque_min, valid, v_ego):
+    """Predict minimum powertrain acceleration after brake release, excluding road grade, in m/s².
+    The live torque report can fall near zero during hold.
     An invalid report counts as no regen available (0 Nm): the brake controller then carries every braking
     request and the EBCM blends in whatever regen there is, rather than the allocator crediting the powertrain
     with braking it cannot see. The creep table still applies below the creep speed."""
-    reported = max(axle_torque_min, self.MAX_ACC_REGEN) if valid else 0.
+    reported = max(axle_torque_min, self.AXLE_TORQUE_SAFETY_MIN) if valid else 0.
     creep = float(np.interp(v_ego, self.CREEP_TORQUE_BP, self.CREEP_TORQUE_V))
     if creep <= 0.:
-      return reported
+      return self.axle_torque_to_accel(reported, v_ego)
     blend = float(np.interp(v_ego, self.CREEP_FADE_BP, [1., 0.]))
     blend = blend * blend * (3. - 2. * blend)
-    return reported + blend * max(creep - reported, 0.)
+    minimum_torque = reported + blend * max(creep - reported, 0.)
+    return self.axle_torque_to_accel(minimum_torque, v_ego)
 
 
 class LongOwner(IntEnum):

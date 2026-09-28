@@ -65,7 +65,7 @@ class TestAscmLongitudinal(unittest.TestCase):
       with self.subTest(speed=speed):
         self.controller = make_controller()
         self.state = make_state(speed=speed, minimum=100. if speed < 2. else -650.)
-        a_regen = p.accel_from_torque(p.powertrain_torque_floor(self.state.axle_torque_min, True, speed), speed)
+        a_regen = p.predict_minimum_powertrain_accel(self.state.axle_torque_min, True, speed)
         self.allocate(a_regen - 0.5)
         self.assertEqual(self.controller.long_owner, LongOwner.BRAKE)
         self.allocate(a_regen + 0.1)
@@ -73,7 +73,7 @@ class TestAscmLongitudinal(unittest.TestCase):
         gas, brake = self.allocate(a_regen + 0.3)
         self.assertEqual(self.controller.long_owner, LongOwner.POWERTRAIN)
         self.assertEqual(brake, 0.)
-        self.assertAlmostEqual(gas, p.torque_ff(a_regen + 0.3, speed), delta=0.01)  # float32 accel
+        self.assertAlmostEqual(gas, p.accel_to_axle_torque(a_regen + 0.3, speed), delta=0.01)  # float32 accel
         # No chatter: falling back inside the band does not hand the request back to the brakes.
         for accel in (a_regen + 0.1, a_regen, a_regen - 0.05):
           self.allocate(accel)
@@ -130,8 +130,8 @@ class TestAscmLongitudinal(unittest.TestCase):
     for _ in range(300):
       gas, brake = self.allocate(0.5, pitch=pitch)
     self.assertEqual(self.controller.long_owner, LongOwner.POWERTRAIN)
-    self.assertAlmostEqual(gas, p.torque_ff(0.5 + grade, self.state.out.vEgo), delta=2.)  # filter settling
-    self.assertGreater(gas, p.torque_ff(0.5, self.state.out.vEgo))
+    self.assertAlmostEqual(gas, p.accel_to_axle_torque(0.5 + grade, self.state.out.vEgo), delta=2.)  # filter settling
+    self.assertGreater(gas, p.accel_to_axle_torque(0.5, self.state.out.vEgo))
 
   def test_near_stop_hold_keeps_the_request_non_positive(self):
     self.allocate(-0.3)
@@ -177,30 +177,31 @@ class TestAscmLongitudinal(unittest.TestCase):
     self.controller.pitch_filter.x = math.atan(0.05)
     gas, brake = self.allocate(2.1, pitch=math.atan(0.05))  # vehicle target exceeds the EBCM envelope
     self.assertEqual(self.controller.long_owner, LongOwner.BRAKE)
-    self.assertEqual((gas, brake), (-650., self.controller.params.EBCM_ACCEL_MAX))
+    self.assertEqual((gas, brake), (-650., self.controller.params.EBCM_ACCEL_SAFETY_MAX))
 
   def test_powertrain_feedforward_is_invertible(self):
     p = self.controller.params
     gas, brake = self.allocate(0.5)
     self.assertEqual(self.controller.long_owner, LongOwner.POWERTRAIN)
     self.assertEqual(brake, 0)
-    self.assertAlmostEqual(p.accel_from_torque(gas, self.state.out.vEgo), 0.5, places=6)
+    self.assertAlmostEqual(p.axle_torque_to_accel(gas, self.state.out.vEgo), 0.5, places=6)
 
 
-class TestPowertrainTorqueFloor(unittest.TestCase):
+class TestMinimumPowertrainAccel(unittest.TestCase):
   def test_creep_estimate_and_valid_minimum(self):
     p = make_controller().params
     for valid in (True, False):
-      self.assertEqual(p.powertrain_torque_floor(8., valid, 0.), 323.)
-      self.assertAlmostEqual(p.powertrain_torque_floor(8., valid, 0.44704), 222.72644444444444)
-    self.assertEqual(p.powertrain_torque_floor(350., True, 0.44704), 350.)
+      self.assertEqual(p.predict_minimum_powertrain_accel(8., valid, 0.), p.axle_torque_to_accel(323., 0.))
+      self.assertAlmostEqual(p.predict_minimum_powertrain_accel(8., valid, 0.44704),
+                             p.axle_torque_to_accel(222.72644444444444, 0.44704))
+    self.assertEqual(p.predict_minimum_powertrain_accel(350., True, 0.44704), p.axle_torque_to_accel(350., 0.44704))
 
   def test_above_creep_uses_live_limit_and_invalid_fallback(self):
     p = make_controller().params
     for speed in (1.44, 4., 15.):
       for minimum, valid, expected in ((-700., True, -650.), (-100., True, -100.), (80., True, 80.), (999., False, 0.), (-500., False, 0.)):
         with self.subTest(speed=speed, minimum=minimum, valid=valid):
-          self.assertEqual(p.powertrain_torque_floor(minimum, valid, speed), expected)
+          self.assertEqual(p.predict_minimum_powertrain_accel(minimum, valid, speed), p.axle_torque_to_accel(expected, speed))
 
   def test_invalid_report_never_releases_the_brakes(self):
     # a -1.1 m/s^2 request at 10 m/s needs more than the -450 Nm of regen the powertrain reports, so the brake
@@ -219,22 +220,23 @@ class TestPowertrainTorqueFloor(unittest.TestCase):
     p = make_controller().params
     for minimum in (-650., -100., 8., 350.):
       for boundary in p.CREEP_FADE_BP:
-        below = p.powertrain_torque_floor(minimum, True, boundary - 1e-6)
-        above = p.powertrain_torque_floor(minimum, True, boundary + 1e-6)
-        self.assertAlmostEqual(below, above, delta=0.002)
-      previous = p.powertrain_torque_floor(minimum, True, 1.10)
+        below = p.predict_minimum_powertrain_accel(minimum, True, boundary - 1e-6)
+        above = p.predict_minimum_powertrain_accel(minimum, True, boundary + 1e-6)
+        self.assertAlmostEqual(below, above, delta=0.002 / (p.MODEL_MASS * p.TIRE_RADIUS * p.DRIVETRAIN_EFFICIENCY))
+      previous = p.predict_minimum_powertrain_accel(minimum, True, 1.10)
       for i in range(1, 101):
-        floor = p.powertrain_torque_floor(minimum, True, 1.10 + 0.34 * i / 100)
-        self.assertGreaterEqual(floor, minimum)
+        speed = 1.10 + 0.34 * i / 100
+        floor = p.predict_minimum_powertrain_accel(minimum, True, speed)
+        self.assertGreaterEqual(floor, p.axle_torque_to_accel(minimum, speed))
         self.assertLessEqual(floor, previous + 1e-9)
         previous = floor
-      self.assertEqual(previous, minimum)
+      self.assertEqual(previous, p.axle_torque_to_accel(minimum, 1.44))
 
   def test_volt_fit_is_not_applied_to_other_powertrains(self):
     p = make_controller(CAR.CHEVROLET_MALIBU).params
     for speed in (0., 0.5, 1.44):
-      self.assertEqual(p.powertrain_torque_floor(-100., True, speed), -100.)
-      self.assertEqual(p.powertrain_torque_floor(80., True, speed), 80.)
+      self.assertEqual(p.predict_minimum_powertrain_accel(-100., True, speed), p.axle_torque_to_accel(-100., speed))
+      self.assertEqual(p.predict_minimum_powertrain_accel(80., True, speed), p.axle_torque_to_accel(80., speed))
 
 
 class TestVoltCreepCAN(unittest.TestCase):
@@ -494,11 +496,28 @@ class TestVoltCreepCAN(unittest.TestCase):
     _, msgs = self.controller.update(self.control.as_reader(), self.state, 0)
     self.assertEqual(self.gas_regen(msgs)[:2], (1, 1))
 
-  def test_disabled_helper_cannot_force_active_zero_demand(self):
-    mode = gmcan.friction_brake_mode(False, False, True, True, False, self.controller.CP)
-    self.assertEqual(mode, 0x1)
-    message = gmcan.create_friction_brake_command(self.controller.packer_ch, CanBus.OBSTACLE, 0, 0, mode)
-    self.assertEqual(message[1][0] >> 4, 0x1)
+  def test_disengagement_clears_hold_and_uses_platform_idle_mode(self):
+    def command(accel):
+      self.control.actuators.accel = accel
+      messages = self.controller.update_ascm_longitudinal(self.control.as_reader(), self.state, 0)
+      data = next(message[1] for message in messages if message[0] == 0x315)
+      return data[0] >> 4, ((data[0] & 0xF) << 8) | data[1]
+
+    for car, network in ((CAR.CHEVROLET_VOLT, "gateway"), (CAR.CHEVROLET_BOLT_EUV, "fwdCamera")):
+      for enabled in (False, True):
+        with self.subTest(car=car, enabled=enabled):
+          self.controller = make_controller(car=car, network=network, flags=int(GMFlags.ASCM_LONG))
+          self.state = make_state(speed=0., minimum=8., standstill=True, cruise_standstill=True)
+          self.control = make_control()
+          self.control.actuators.longControlState = "stopping"
+          self.assertEqual(command(-1.)[0], 0xD)
+          self.control.enabled = enabled
+          self.control.longActive = False
+          expected_mode = 0x9 if enabled and car == CAR.CHEVROLET_BOLT_EUV else 0x1
+          for accel in (-1., 0., 0.1):
+            self.assertEqual(command(accel), (expected_mode, 0))
+            self.assertEqual(self.controller.long_owner, LongOwner.POWERTRAIN)
+            self.assertFalse(self.controller.stop_hold_latched)
 
   def test_frame_encodes_the_signed_request_and_its_checksum(self):
     for accel, counts in ((-4., -400), (-1.1, -110), (-0.01, -1), (0., 0), (0.01, 1), (0.32, 32), (2., 200), (-1.16, -116)):
@@ -518,8 +537,8 @@ class TestVoltCreepCAN(unittest.TestCase):
       control = make_control()
       bus = CanBus.POWERTRAIN if network == "fwdCamera" else CanBus.CHASSIS
       # Include the sub-count region at the lookup's release boundary alongside a full-range sweep.
-      edge = p.BRAKE_LOOKUP_BP[1]
-      width_per_count = (edge - p.BRAKE_LOOKUP_BP[0]) / 400.
+      edge = p.LEGACY_BRAKE_ACCEL_BP[1]
+      width_per_count = (edge - p.LEGACY_BRAKE_ACCEL_BP[0]) / 400.
       requests = list(np.arange(-4.5, 2.5, 0.01)) + [edge - c * width_per_count for c in (0.4, 0.5, 0.6, 1.5, 2.5)]
       for standstill, stopping in ((False, False), (True, False), (True, True)):
         with self.subTest(car=car, standstill=standstill, stopping=stopping):
@@ -527,7 +546,7 @@ class TestVoltCreepCAN(unittest.TestCase):
           control.actuators.longControlState = "stopping" if stopping else "pid"
           for idx, accel in enumerate(requests):
             control.actuators.accel = float(accel)
-            old_counts = int(round(np.interp(control.actuators.accel, p.BRAKE_LOOKUP_BP, [400., 0.])))
+            old_counts = int(round(np.interp(control.actuators.accel, p.LEGACY_BRAKE_ACCEL_BP, [400., 0.])))
             mode = 0x9 if car == CAR.CHEVROLET_BOLT_EUV else 0x1
             if old_counts > 0:
               mode = 0xd if standstill and (network != "fwdCamera" or stopping) else 0xa
@@ -539,7 +558,7 @@ class TestVoltCreepCAN(unittest.TestCase):
   def test_legacy_half_counts_keep_upstream_ties_to_even(self):
     controller = make_controller(flags=0)
     controller.CP.autoResumeSng = False
-    controller.params.BRAKE_LOOKUP_BP = [-4., 0.]  # exactly representable half-count inputs
+    controller.params.LEGACY_BRAKE_ACCEL_BP = [-4., 0.]  # exactly representable half-count inputs
     control = make_control()
     for accel, counts in ((-1.125, 112), (-1.375, 138)):
       with self.subTest(accel=accel):

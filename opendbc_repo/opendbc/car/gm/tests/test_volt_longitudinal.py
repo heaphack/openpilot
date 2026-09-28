@@ -83,13 +83,12 @@ class TestAscmLongitudinal(unittest.TestCase):
     self.state = make_state(speed=1.0)
     # A 5% downgrade supplies ~0.49 m/s^2; a modest positive request is still braking effort.
     pitch = -math.atan(0.05)
-    grade = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY
     for _ in range(300):  # settle the pitch filter
       self.allocate(-0.3, pitch=pitch)
     self.assertEqual(self.controller.owner, LongOwner.BRAKE)
     gas, brake = self.allocate(0.3, pitch=pitch)
     self.assertEqual(self.controller.owner, LongOwner.BRAKE)
-    self.assertEqual((gas, brake), (-650., round((0.3 + grade) * 100) / 100))
+    self.assertEqual((gas, brake), (-650., 0.3))  # EBCM regulates vehicle acceleration, including on the descent.
     # Flat ground with the same request hands the request back to the powertrain.
     for _ in range(300):
       gas, brake = self.allocate(0.3, pitch=0.)
@@ -111,11 +110,11 @@ class TestAscmLongitudinal(unittest.TestCase):
     gas, brake = self.allocate(-0.5, pitch=downhill)
     self.assertEqual(self.controller.owner, LongOwner.BRAKE)
     self.assertEqual(gas, -650.)
-    self.assertLess(brake, -1.0)  # -0.5 plus 0.78 of grade to hold: braking, not drive torque
+    self.assertEqual(brake, -0.5)  # Grade affects ownership, not the EBCM acceleration target.
 
   def test_grade_filter_settles_at_its_time_constant(self):
-    # The filter runs at the 25 Hz allocation rate: a 0.5 s time constant means 63% of a pitch step after
-    # 0.5 s (12-13 calls) and 95% after 1.5 s, not the 2 s a 100 Hz-configured filter would take.
+    # Four 100 Hz pitch updates per allocation: a 0.5 s time constant means 63% of a step after
+    # 0.5 s (12-13 allocations) and 95% after 1.5 s.
     pitch = math.atan(0.05)
     for _ in range(13):
       self.allocate(0.5, pitch=pitch)
@@ -157,7 +156,7 @@ class TestAscmLongitudinal(unittest.TestCase):
         gas, brake = self.allocate(accel, pitch=pitch)
         self.assertEqual(self.controller.owner, LongOwner.BRAKE)
         self.assertEqual(gas, -650.)
-        self.assertGreater(brake, 0)  # Positive signed acceleration can ease braking without giving up ownership.
+        self.assertAlmostEqual(brake, round(accel, 2))  # Preserve the vehicle target while retaining brake ownership.
 
   def test_small_positive_target_below_creep_requires_brake(self):
     self.state = make_state(speed=0.5, minimum=8.)
@@ -173,10 +172,10 @@ class TestAscmLongitudinal(unittest.TestCase):
   def test_release_request_is_bounded_to_the_safety_envelope(self):
     # a bogus but 'valid' minimum torque report would put the release threshold out of reach; the request the
     # brake controller then carries must still fit the panda's +200-count (+2.0 m/s^2) max_accel
-    self.state = make_state(speed=1.0, minimum=1300.)
+    self.state = make_state(speed=1.0, minimum=10000.)
     self.controller.owner = LongOwner.BRAKE
     self.controller.pitch.x = math.atan(0.05)
-    gas, brake = self.allocate(1.6, pitch=math.atan(0.05))  # net +2.09 m/s^2, still under the release threshold
+    gas, brake = self.allocate(2.1, pitch=math.atan(0.05))  # vehicle target exceeds the EBCM envelope
     self.assertEqual(self.controller.owner, LongOwner.BRAKE)
     self.assertEqual((gas, brake), (-650., self.controller.params.EBCM_ACCEL_MAX))
 
@@ -266,7 +265,7 @@ class TestVoltCreepCAN(unittest.TestCase):
     return mode, demand
 
   def test_reported_brake_accel_matches_signed_can_request(self):
-    cases = ((0.1, math.atan(0.05), 8., True, 0.),  # grade compensation suppressed by stop hold
+    cases = ((0.1, math.atan(0.05), 8., True, 0.),  # positive vehicle target suppressed by stop hold
              (0.124, 0., 8., False, 0.12),          # positive release, quantized
              (-0.126, 0., 8., False, -0.13),        # negative request, quantized
              (-5., 0., 8., False, -4.),            # negative safety bound
@@ -290,6 +289,39 @@ class TestVoltCreepCAN(unittest.TestCase):
           output, messages = self.controller.update(self.control.as_reader(), self.state, 0)
           self.assertFalse(any(message[0] == 0x315 for message in messages))
           self.assertAlmostEqual(output.accel, demand)
+
+  def test_brake_can_request_is_independent_of_grade(self):
+    # The EBCM regulates vehicle acceleration. Gravity belongs in torque allocation, not its CAN target.
+    cases = ((-0.08, -1.2), (0., -1.2), (0.08, -1.2), (-0.08, 0.), (-0.08, 0.3))
+    for grade, accel in cases:
+      with self.subTest(grade=grade, accel=accel):
+        self.controller = make_controller()
+        self.state = make_state(speed=0.5, minimum=8.)
+        pitch = math.atan(grade)
+        self.control = make_control(pitch=pitch)
+        self.controller.pitch.x = pitch
+        mode, demand = self.update(accel)
+        self.assertEqual(self.controller.owner, LongOwner.BRAKE)
+        self.assertEqual(mode, 0xa)
+        self.assertAlmostEqual(demand, accel)
+        self.assertAlmostEqual(self.output.accel, demand)
+        self.assertEqual(self.controller.apply_gas, -650.)
+
+  def test_stop_hold_can_request_is_independent_of_grade(self):
+    for grade in (-0.08, 0., 0.08):
+      for accel, expected in ((-1., -1.), (0.1, 0.)):
+        with self.subTest(grade=grade, accel=accel):
+          self.controller = make_controller()
+          self.state = make_state()
+          pitch = math.atan(grade)
+          self.control = make_control(pitch=pitch)
+          self.control.actuators.longControlState = "stopping"
+          self.controller.pitch.x = pitch
+          mode, demand = self.update(accel)
+          self.assertEqual(mode, 0xb)
+          self.assertTrue(self.controller.stop_hold)
+          self.assertAlmostEqual(demand, expected)
+          self.assertAlmostEqual(self.output.accel, demand)
 
   def test_powertrain_accel_logging_remains_the_net_request(self):
     self.state = make_state(speed=0., minimum=8.)
@@ -571,7 +603,7 @@ class TestNearStopHold(unittest.TestCase):
     self.assertFalse(self.controller.stop_hold)
     self.assertEqual(self.controller.owner, LongOwner.BRAKE)
     self.assertEqual(gas, -650.)
-    self.assertLess(brake, -3.0)  # gravity supplies far more than the request; braking is the release
+    self.assertEqual(brake, 0.5)  # Gravity keeps brake ownership; EBCM receives the positive vehicle target.
 
   def test_hold_needs_a_stop_first(self):
     for accel in (0.1, -0.5, 0.2):

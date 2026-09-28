@@ -6,7 +6,7 @@ Base: commaai/openpilot nightly-chestnut at
 All four patch sets are now applied:
 - Set 01: OEM-inspired brake control, including the command-builder refactor, brake-hold exit fix,
   signed brake output logging, and legacy count rounding. Applied in its original twelve-commit form;
-  the consolidated functionality/test pair produces identical code.
+  the updated consolidated functionality/test pair includes the grade-request correction described below.
 - Set 02: automatic resume from the ECM ACC standstill state (`7dfc0fd3b`).
 - Set 03: ASCM interceptor harness.
 - Set 04: OEM-inspired steering feedforward and integrator (`c1959d39c`).
@@ -15,7 +15,15 @@ The Volt interface reports ASCM_LONG and ASCM_INTERCEPTOR enabled, autoResumeSng
 ki [0.01, 0.02] at [10, 41] m/s. Sets 02 and 04 were added on top of the existing validated branch;
 its history was not reset or rewritten for this update.
 
-Current validation after adding sets 02 and 04:
+Current grade-request correction:
+- EBCM receives the vehicle-acceleration request, including the longitudinal I correction, without an added
+  gravity term. Grade compensation remains in powertrain torque and ownership selection.
+- Existing bounds, quantization, stop-hold and mode-selection rules remain in place.
+- GM tests: 43 passed, 71 subtests passed. GM lint and diff formatting passed.
+- Updated set 01 plus unchanged sets 02–04 apply cleanly to the nightly base and reproduce all 12 touched files.
+- The corrected mapping has not yet been road-tested. No safety-source changes or firmware rebuild required.
+
+Previous validation after adding sets 02 and 04:
 - GM controller tests and all car interface tests: 296 passed, 60 subtests passed.
 - GM lint and diff formatting passed.
 - Auto-resume, platform flags, and steering gain schedule checked directly through the Volt interface.

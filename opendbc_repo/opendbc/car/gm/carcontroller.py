@@ -78,8 +78,8 @@ class CarController(CarControllerBase):
       # powertrain takes it where more is needed.
       self.stop_hold = stopping or (self.stop_hold and accel <= p.LAUNCH_INTENT_ACCEL)
 
-      # On a downhill gravity supplies part of the requested acceleration, so the actuators only need to produce
-      # the rest (filtered pitch from update_pitch)
+      # Compensate gravity when calculating powertrain torque and selecting the owner.
+      # The EBCM receives the vehicle acceleration target directly.
       net = accel + math.sin(self.pitch.x) * ACCELERATION_DUE_TO_GRAVITY
 
       # Compare required torque with the minimum available after releasing the brakes, including creep.
@@ -99,11 +99,10 @@ class CarController(CarControllerBase):
         gas = float(np.clip(t_ff, p.MAX_ACC_REGEN, p.MAX_GAS))
         brake_accel = 0.
       else:
-        # brake controller: gas pinned at max ACC regen, the whole net effort as the signed request. It may go
-        # positive to release retained braking; the near-stop hold keeps it non-positive. Bounded to the panda's
-        # envelope on both sides, so a bad axle-torque report cannot produce a frame the safety would drop, and
-        # quantized to the field's 0.01 m/s^2 so what is reported is what is sent.
-        target = min(net, 0.) if self.stop_hold else net
+        # Request vehicle acceleration; the EBCM supplies the braking needed to achieve it.
+        # Near-stop hold keeps the request non-positive. Clamp to the panda's envelope
+        # and quantize to 0.01 m/s^2 so the reported value matches the transmitted request.
+        target = min(accel, 0.) if self.stop_hold else accel
         brake_accel = math.floor(float(np.clip(target, p.EBCM_ACCEL_MIN, p.EBCM_ACCEL_MAX)) * 100. + 0.5) / 100.
         gas = p.MAX_ACC_REGEN
 

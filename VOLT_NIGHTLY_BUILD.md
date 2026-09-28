@@ -15,6 +15,15 @@ The Volt interface reports ASCM_LONG and ASCM_INTERCEPTOR enabled, autoResumeSng
 ki [0.01, 0.02] at [10, 41] m/s. Sets 02 and 04 were added on top of the existing validated branch;
 its history was not reset or rewritten for this update.
 
+Request/command naming refactor (2026-09-28):
+- Explicit request/command names distinguish steering torque, axle torque and brake acceleration.
+  Cached outputs and longitudinal state also use descriptive names; shared actuator fields are unchanged.
+- Compared with the prior controller: identical 41,402 CAN messages and all actuator outputs over 22,400
+  frames in 14 configurations. Owner/hold state and pitch also match exactly.
+- Base patch tests: 39 passed, 54 subtests. Active GM tests: 43 passed, 71 subtests. Lint/diff checks passed.
+- Set 01 is refreshed; sets 02 and 03 use the renamed fields and remain independently applicable.
+  Set 04 and firmware are unchanged. Full patch application reproduces the active checkout.
+
 Current grade-request correction:
 - EBCM receives the vehicle-acceleration request, including the longitudinal I correction, without an added
   gravity term. Grade compensation remains in powertrain torque and ownership selection.

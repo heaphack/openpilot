@@ -232,11 +232,14 @@ class TestMinimumPowertrainAccel(unittest.TestCase):
         previous = floor
       self.assertEqual(previous, p.axle_torque_to_accel(minimum, 1.44))
 
-  def test_volt_fit_is_not_applied_to_other_powertrains(self):
-    p = make_controller(CAR.CHEVROLET_MALIBU).params
-    for speed in (0., 0.5, 1.44):
-      self.assertEqual(p.predict_minimum_powertrain_accel(-100., True, speed), p.axle_torque_to_accel(-100., speed))
-      self.assertEqual(p.predict_minimum_powertrain_accel(80., True, speed), p.axle_torque_to_accel(80., speed))
+  def test_other_powertrains_require_their_own_calibration(self):
+    for car in CAR:
+      if car == CAR.CHEVROLET_VOLT:
+        continue
+      with self.subTest(car=car):
+        self.assertFalse(make_controller(car).params.ASCM_LONG)
+        with self.assertRaisesRegex(ValueError, "ASCM longitudinal calibration missing"):
+          make_controller(car, flags=int(car.config.flags) | int(GMFlags.ASCM_LONG))
 
 
 class TestVoltCreepCAN(unittest.TestCase):
@@ -499,14 +502,18 @@ class TestVoltCreepCAN(unittest.TestCase):
   def test_disengagement_clears_hold_and_uses_platform_idle_mode(self):
     def command(accel):
       self.control.actuators.accel = accel
-      messages = self.controller.update_ascm_longitudinal(self.control.as_reader(), self.state, 0)
+      messages = update_longitudinal(self.control.as_reader(), self.state, 0)
       data = next(message[1] for message in messages if message[0] == 0x315)
       return data[0] >> 4, ((data[0] & 0xF) << 8) | data[1]
 
     for car, network in ((CAR.CHEVROLET_VOLT, "gateway"), (CAR.CHEVROLET_BOLT_EUV, "fwdCamera")):
       for enabled in (False, True):
         with self.subTest(car=car, enabled=enabled):
-          self.controller = make_controller(car=car, network=network, flags=int(GMFlags.ASCM_LONG))
+          flags = GMFlags.ASCM_LONG if car == CAR.CHEVROLET_VOLT else 0
+          self.controller = make_controller(car=car, network=network, flags=int(flags))
+          self.controller.CP.autoResumeSng = False
+          update_longitudinal = (self.controller.update_ascm_longitudinal if self.controller.params.ASCM_LONG
+                                else self.controller.update_legacy_longitudinal)
           self.state = make_state(speed=0., minimum=8., standstill=True, cruise_standstill=True)
           self.control = make_control()
           self.control.actuators.longControlState = "stopping"

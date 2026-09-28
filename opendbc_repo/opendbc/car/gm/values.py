@@ -44,23 +44,6 @@ class CarControllerParams:
   # enabled; it does not command zero or constant pressure. Positive requests can ease retained braking.
   # The creep fit and vehicle-model parameters are for the Volt; other platforms require validation.
 
-  # Vehicle model: road-load force plus mass * acceleration, converted to axle torque with efficiency.
-  MODEL_MASS = 1776.                 # kg, includes a typical load on top of the curb weight
-  ROLLING_RESISTANCE_ACCEL = 0.0785   # m/s^2, coefficient 0.008 x g
-  AERO_DRAG_FACTOR = 0.25            # N / (m/s)^2
-  TIRE_RADIUS = 0.3234               # m, effective radius (2032 mm rolling circumference / 2 pi)
-  DRIVETRAIN_EFFICIENCY = 0.88       # divide for drive torque, multiply for regen
-
-  # Owner hysteresis band around the estimated powertrain floor, m/s^2: enter the brake path a little below what the
-  # powertrain can deliver, release only once the request is clearly above it.
-  BRAKE_ENTRY_ACCEL_MARGIN = -0.1
-  BRAKE_RELEASE_ACCEL_MARGIN = 0.2
-
-  # Released-creep estimate for the Volt, fitted to actual axle torque. Speed in m/s, torque in Nm.
-  CREEP_TORQUE_BP = [0., 1.44]
-  # Fade the model back to the live limit before the table ends, avoiding a jump into negative regen.
-  CREEP_FADE_BP = [1.10, 1.44]
-
   # Grade estimate: filtered localizer pitch; smoothing does not separate suspension motion from road slope.
   PITCH_FILTER_RC = 0.5           # s
 
@@ -112,7 +95,25 @@ class CarControllerParams:
 
     # two-owner allocation above instead of the lookups
     self.ASCM_LONG = bool(CP.flags & GMFlags.ASCM_LONG)
-    self.CREEP_TORQUE_V = [323., 0.] if CP.carFingerprint == CAR.CHEVROLET_VOLT else [0., 0.]
+    if CP.carFingerprint == CAR.CHEVROLET_VOLT:
+      # Volt vehicle model: road-load force plus mass * acceleration, converted to axle torque.
+      self.MODEL_MASS = 1776.                 # kg, includes a typical load on top of the curb weight
+      self.ROLLING_RESISTANCE_ACCEL = 0.0785   # m/s^2, coefficient 0.008 x g
+      self.AERO_DRAG_FACTOR = 0.25            # N / (m/s)^2
+      self.TIRE_RADIUS = 0.3234               # m, effective radius (2032 mm rolling circumference / 2 pi)
+      self.DRIVETRAIN_EFFICIENCY = 0.88       # divide for drive torque, multiply for regen
+
+      # Owner hysteresis around the predicted powertrain minimum, m/s^2.
+      self.BRAKE_ENTRY_ACCEL_MARGIN = -0.1
+      self.BRAKE_RELEASE_ACCEL_MARGIN = 0.2
+
+      # Released-creep fit to actual Volt axle torque: speed in m/s, torque in Nm.
+      self.CREEP_TORQUE_BP = [0., 1.44]
+      self.CREEP_TORQUE_V = [323., 0.]
+      # Fade back to the live limit before the table ends, avoiding a jump into negative regen.
+      self.CREEP_FADE_BP = [1.10, 1.44]
+    elif self.ASCM_LONG:
+      raise ValueError(f"ASCM longitudinal calibration missing for {CP.carFingerprint}")
 
   # ---- vehicle-model helpers ----
   def accel_to_axle_torque(self, accel, v_ego):

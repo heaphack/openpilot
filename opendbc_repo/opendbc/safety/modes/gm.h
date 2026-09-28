@@ -105,11 +105,11 @@ static bool gm_tx_hook(const CANPacket_t *msg) {
 
   bool tx = true;
 
-  // BRAKE: safety check
+  // BRAKE: the EBCM request is a signed acceleration in 0.01 m/s^2 counts, not a brake pressure
   if (msg->addr == 0x315U) {
-    int brake = ((msg->data[0] & 0xFU) << 8) + msg->data[1];
-    brake = (0x1000 - brake) & 0xFFF;
-    if (longitudinal_brake_checks(brake, *gm_long_limits)) {
+    const int raw = ((msg->data[0] & 0xFU) << 8) + msg->data[1];
+    const int request = to_signed(raw, 12);
+    if (longitudinal_accel_checks(request, *gm_long_limits)) {
       tx = false;
     }
   }
@@ -126,16 +126,16 @@ static bool gm_tx_hook(const CANPacket_t *msg) {
     }
   }
 
-  // GAS/REGEN: safety check
+  // ACC POWERTRAIN: axle torque safety check
   if (msg->addr == 0x2CBU) {
-    bool apply = GET_BIT(msg, 0U);
-    // convert float CAN signal to an int for gas checks: 22534 / 0.125 = 180272
-    int gas_regen = (((msg->data[1] & 0x7U) << 16) | (msg->data[2] << 8) | msg->data[3]) - 180272U;
+    bool powertrain_acc_active = GET_BIT(msg, 0U);
+    // Remove the DBC offset; safety limits use 0.125 Nm counts: 22534 / 0.125 = 180272
+    int axle_torque_cmd_counts = (((msg->data[1] & 0x7U) << 16) | (msg->data[2] << 8) | msg->data[3]) - 180272U;
 
     bool violation = false;
-    // Allow apply bit in pre-enabled and overriding states
-    violation |= !controls_allowed && apply;
-    violation |= longitudinal_gas_checks(gas_regen, *gm_long_limits);
+    // Check the ACC-active flag separately from the torque magnitude.
+    violation |= !controls_allowed && powertrain_acc_active;
+    violation |= longitudinal_gas_checks(axle_torque_cmd_counts, *gm_long_limits);
 
     if (violation) {
       tx = false;
@@ -163,10 +163,14 @@ static safety_config gm_init(uint16_t param) {
   static const int GM_GAS_TO_CAN = 8;  // 1 / 0.125
 
   static const LongitudinalLimits GM_ASCM_LONG_LIMITS = {
+    // Powertrain torque limits, converted from Nm to CAN counts.
     .max_gas = 1018 * GM_GAS_TO_CAN,
     .min_gas = -650 * GM_GAS_TO_CAN,
     .inactive_gas = -650 * GM_GAS_TO_CAN,
-    .max_brake = 400,
+    // Brake controller acceleration limits, 0.01 m/s^2 per count.
+    .min_accel = -400,  // Maximum requested deceleration.
+    .max_accel = 200,   // Positive requests only release braking already applied (creep/downhill hold).
+    .inactive_accel = 0,
   };
 
   static const CanMsg GM_ASCM_TX_MSGS[] = {{0x180, 0, 4, .check_relay = true}, {0x409, 0, 7, .check_relay = false}, {0x40A, 0, 7, .check_relay = false}, {0x2CB, 0, 8, .check_relay = true}, {0x370, 0, 6, .check_relay = false},  // pt bus
@@ -175,10 +179,14 @@ static safety_config gm_init(uint16_t param) {
 
 
   static const LongitudinalLimits GM_CAM_LONG_LIMITS = {
+    // Powertrain torque limits, converted from Nm to CAN counts.
     .max_gas = 1346 * GM_GAS_TO_CAN,
     .min_gas = -540 * GM_GAS_TO_CAN,
     .inactive_gas = -500 * GM_GAS_TO_CAN,
-    .max_brake = 400,
+    // Brake controller acceleration limits, 0.01 m/s^2 per count.
+    .min_accel = -400,  // Maximum requested deceleration.
+    .max_accel = 200,   // Positive requests only release braking already applied (creep/downhill hold).
+    .inactive_accel = 0,
   };
 
   // block PSCMStatus (0x184); forwarded through openpilot to hide an alert from the camera

@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field
-from enum import Enum, IntFlag
+from enum import Enum, IntEnum, IntFlag
+
+import numpy as np
 
 from opendbc.car import Bus, PlatformConfig, DbcDict, Platforms, CarSpecs
 from opendbc.car.structs import CarParams
@@ -18,7 +20,6 @@ class CarControllerParams:
   STEER_DRIVER_ALLOWANCE = 65
   STEER_DRIVER_MULTIPLIER = 4
   STEER_DRIVER_FACTOR = 100
-  NEAR_STOP_BRAKE_PHASE = 0.5  # m/s
 
   # Heartbeat for dash "Service Adaptive Cruise" and "Service Front Camera"
   ADAS_KEEPALIVE_STEP = 100
@@ -32,31 +33,129 @@ class CarControllerParams:
   ACCEL_MAX = 2.  # m/s^2
   ACCEL_MIN = -4.  # m/s^2
 
-  def __init__(self, CP):
-    # Gas/brake lookups
-    self.MAX_BRAKE = 400  # ~ -4.0 m/s^2 with regen
+  # ---- GMFlags.ASCM_LONG: two-owner longitudinal allocation ----
+  # EBCMFrictionBrakeCmd carries signed acceleration. The legacy tables request powertrain torque and
+  # braking together; this allocator assigns the request to one owner (LongOwner):
+  #   POWERTRAIN: vehicle-model axle torque, with the EBCM in its platform-specific idle mode.
+  #   BRAKE:      axle torque at the negative safety limit; the EBCM receives vehicle acceleration and
+  #               blends regen and friction to meet it.
+  # Ownership compares grade-compensated acceleration with the predicted powertrain minimum after brake
+  # release, including released creep, with hysteresis. A zero EBCM request keeps acceleration control
+  # enabled; it does not command zero or constant pressure. Positive requests can ease retained braking.
+  # The creep fit and vehicle-model parameters are for the Volt; other platforms require validation.
 
+  # Grade estimate: filtered localizer pitch; smoothing does not separate suspension motion from road slope.
+  PITCH_FILTER_RC = 0.5           # s
+
+  # ---- near-stop hold (FrictionBrakeMode 0xB) ----
+  # openpilot's shouldStop is the model's raw acceleration output crossing +0.1 m/s^2 below 0.3 m/s, with no
+  # hysteresis, and at a crawl it flickers for 50-500 ms. Following that flicker out of the stopping state
+  # released the brakes: in 0xA the EBCM lets the pressure go on any reduction of the request at a stop, the
+  # ECM's own standstill hold (0xD) is still 1.2-1.7 s away, and creep rolls the car. So once openpilot commits
+  # to a stop the brake controller holds the near-stop submode, which brings the car to a stop and keeps it
+  # there whatever the numeric request does, until long control asks for clearly more than the flicker ever
+  # does. The flickers seen so far peak at +0.14 m/s^2; real launches pass this within ~0.3 s.
+  LAUNCH_INTENT_ACCEL = 0.3       # m/s^2
+
+  # EBCMFrictionBrakeCmd is a signed acceleration request in m/s^2 (0.01 per count). These mirror the panda's
+  # [-400, +200] count envelope: a positive request only releases braking the EBCM already holds.
+  EBCM_ACCEL_SAFETY_MIN = -4.
+  EBCM_ACCEL_SAFETY_MAX = 2.
+
+  def __init__(self, CP):
+    # Axle torque command safety limits (Nm), shared by both allocation paths.
     if CP.carFingerprint in (CAMERA_ACC_CAR | SDGM_CAR):
-      self.MAX_GAS = 1346.0
-      self.MAX_ACC_REGEN = -540.0
-      self.INACTIVE_REGEN = -500.0
+      self.AXLE_TORQUE_SAFETY_MAX = 1346.0
+      self.AXLE_TORQUE_SAFETY_MIN = -540.0
+      self.LONG_INACTIVE_AXLE_TORQUE = -500.0
       # Camera ACC vehicles have no regen while enabled.
-      # Camera transitions to MAX_ACC_REGEN from zero gas and uses friction brakes instantly
-      max_regen_acceleration = 0.
+      # Camera transitions to AXLE_TORQUE_SAFETY_MIN from zero gas and uses friction brakes instantly
+      legacy_brake_blend_accel = 0.
 
     else:
-      self.MAX_GAS = 1018.0  # Safety limit, not ACC max. Stock ACC >2042 from standstill.
-      self.MAX_ACC_REGEN = -650.0  # Max ACC regen is slightly less than max paddle regen
-      self.INACTIVE_REGEN = -650.0
+      self.AXLE_TORQUE_SAFETY_MAX = 1018.0  # Safety limit, not ACC max. Stock ACC >2042 from standstill.
+      self.AXLE_TORQUE_SAFETY_MIN = -650.0  # Max ACC regen is slightly less than max paddle regen
+      self.LONG_INACTIVE_AXLE_TORQUE = -650.0
       # ICE has much less engine braking force compared to regen in EVs,
       # lower threshold removes some braking deadzone
-      max_regen_acceleration = -1. if CP.carFingerprint in EV_CAR else -0.1
+      legacy_brake_blend_accel = -1. if CP.carFingerprint in EV_CAR else -0.1
 
-    self.GAS_LOOKUP_BP = [max_regen_acceleration, 0., self.ACCEL_MAX]
-    self.GAS_LOOKUP_V = [self.MAX_ACC_REGEN, 0., self.MAX_GAS]
+    # Legacy mapping: acceleration breakpoints (m/s²) to axle torque (Nm).
+    # Below legacy_brake_blend_accel, torque stays at its minimum and the brake lookup adds braking.
+    self.LEGACY_AXLE_TORQUE_BP = [legacy_brake_blend_accel, 0., self.ACCEL_MAX]
+    self.LEGACY_AXLE_TORQUE_V = [self.AXLE_TORQUE_SAFETY_MIN, 0., self.AXLE_TORQUE_SAFETY_MAX]
 
-    self.BRAKE_LOOKUP_BP = [self.ACCEL_MIN, max_regen_acceleration]
-    self.BRAKE_LOOKUP_V = [self.MAX_BRAKE, 0.]
+    # The EBCM request as a function of the planner's acceleration, in the field's own units (m/s^2). This is
+    # the mapping openpilot has always sent these platforms, written when the field was read as a brake
+    # pressure (400 counts at ACCEL_MIN): it asks the EBCM for less than the planner's deceleration and adds
+    # regen on the gas path at the same time. Retained unchanged until each platform is confirmed on the
+    # two-owner allocation, which sends the planner's acceleration itself.
+    self.LEGACY_BRAKE_ACCEL_BP = [self.ACCEL_MIN, legacy_brake_blend_accel]
+    self.LEGACY_BRAKE_ACCEL_V = [self.EBCM_ACCEL_SAFETY_MIN, 0.]
+
+    # two-owner allocation above instead of the lookups
+    self.ASCM_LONG = bool(CP.flags & GMFlags.ASCM_LONG)
+    if CP.carFingerprint == CAR.CHEVROLET_VOLT:
+      # Volt vehicle model: road-load force plus mass * acceleration, converted to axle torque.
+      self.MODEL_MASS = 1776.                 # kg, includes a typical load on top of the curb weight
+      self.ROLLING_RESISTANCE_ACCEL = 0.0785   # m/s^2, coefficient 0.008 x g
+      self.AERO_DRAG_FACTOR = 0.25            # N / (m/s)^2
+      self.TIRE_RADIUS = 0.3234               # m, effective radius (2032 mm rolling circumference / 2 pi)
+      self.DRIVETRAIN_EFFICIENCY = 0.88       # divide for drive torque, multiply for regen
+
+      # Owner hysteresis around the predicted powertrain minimum, m/s^2.
+      self.BRAKE_ENTRY_ACCEL_MARGIN = -0.1
+      self.BRAKE_RELEASE_ACCEL_MARGIN = 0.2
+
+      # Released-creep fit to actual Volt axle torque: speed in m/s, torque in Nm.
+      self.CREEP_TORQUE_BP = [0., 1.44]
+      self.CREEP_TORQUE_V = [323., 0.]
+      # Fade back to the live limit before the table ends, avoiding a jump into negative regen.
+      self.CREEP_FADE_BP = [1.10, 1.44]
+    elif self.ASCM_LONG:
+      raise ValueError(f"ASCM longitudinal calibration missing for {CP.carFingerprint}")
+
+  # ---- vehicle-model helpers ----
+  def accel_to_axle_torque(self, accel, v_ego):
+    """Convert grade-compensated acceleration (m/s²) to axle torque (Nm), including road loads and efficiency."""
+    t = (self.MODEL_MASS * (accel + self.ROLLING_RESISTANCE_ACCEL) + self.AERO_DRAG_FACTOR * v_ego * v_ego) * self.TIRE_RADIUS
+    return t / self.DRIVETRAIN_EFFICIENCY if t > 0 else t * self.DRIVETRAIN_EFFICIENCY
+
+  def axle_torque_to_accel(self, torque, v_ego):
+    """Convert axle torque (Nm) to acceleration (m/s²), excluding road grade; inverse of accel_to_axle_torque."""
+    t = torque * self.DRIVETRAIN_EFFICIENCY if torque > 0 else torque / self.DRIVETRAIN_EFFICIENCY
+    return (t / self.TIRE_RADIUS - self.AERO_DRAG_FACTOR * v_ego * v_ego) / self.MODEL_MASS - self.ROLLING_RESISTANCE_ACCEL
+
+  def predict_minimum_powertrain_accel(self, axle_torque_min, valid, v_ego):
+    """Predict minimum powertrain acceleration after brake release, excluding road grade, in m/s².
+    The live torque report can fall near zero during hold.
+    An invalid report counts as no regen available (0 Nm): the brake controller then carries every braking
+    request and the EBCM blends in whatever regen there is, rather than the allocator crediting the powertrain
+    with braking it cannot see. The creep table still applies below the creep speed."""
+    reported = max(axle_torque_min, self.AXLE_TORQUE_SAFETY_MIN) if valid else 0.
+    creep = float(np.interp(v_ego, self.CREEP_TORQUE_BP, self.CREEP_TORQUE_V))
+    if creep <= 0.:
+      return self.axle_torque_to_accel(reported, v_ego)
+    blend = float(np.interp(v_ego, self.CREEP_FADE_BP, [1., 0.]))
+    blend = blend * blend * (3. - 2. * blend)
+    minimum_torque = reported + blend * max(creep - reported, 0.)
+    return self.axle_torque_to_accel(minimum_torque, v_ego)
+
+
+class LongOwner(IntEnum):
+  POWERTRAIN = 0   # AxleTorqueCmd carries the request (drive or regen), EBCM idle
+  BRAKE = 1        # AxleTorqueCmd pinned at max regen, EBCM carries the signed request
+
+
+class GMFlags(IntFlag):
+  # Detected flags
+  HAS_BSM = 1  # blind spot monitoring
+
+  # Static flags
+  # Two-owner longitudinal allocation: a vehicle-model torque feedforward to the powertrain, a signed
+  # acceleration request to the EBCM, and the handoff between them driven by the powertrain's reported
+  # minimum axle torque (0x1C5). See CarControllerParams. Set per platform once confirmed on that car.
+  ASCM_LONG = 2
 
 
 class GMSafetyFlags(IntFlag):
@@ -122,6 +221,7 @@ class CAR(Platforms):
   CHEVROLET_VOLT = GMASCMPlatformConfig(
     [GMCarDocs("Chevrolet Volt 2017-18", min_enable_speed=0, video="https://youtu.be/QeMCN_4TFfQ")],
     GMCarSpecs(mass=1607, wheelbase=2.69, steerRatio=17.7, centerToFrontRatio=0.45, tireStiffnessFactor=0.469),
+    flags=GMFlags.ASCM_LONG,
   )
   CADILLAC_ATS = GMASCMPlatformConfig(
     [GMCarDocs("Cadillac ATS Premium Performance 2018")],

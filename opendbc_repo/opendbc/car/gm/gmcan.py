@@ -1,5 +1,5 @@
+import math
 from opendbc.car.can_definitions import CanData
-from opendbc.car.gm.values import CAR
 
 
 def create_buttons(packer, bus, idx, button):
@@ -36,12 +36,12 @@ def create_pscm_status(packer, bus, pscm_status):
   return packer.make_can_msg("PSCMStatus", bus, values)
 
 
-def create_steering_control(packer, bus, apply_torque, idx, lkas_active):
+def create_steering_command(packer, bus, steer_torque_cmd, idx, lkas_active):
   values = {
     "LKASteeringCmdActive": lkas_active,
-    "LKASteeringCmd": apply_torque,
+    "LKASteeringCmd": steer_torque_cmd,
     "RollingCounter": idx,
-    "LKASteeringCmdChecksum": 0x1000 - (lkas_active << 11) - (apply_torque & 0x7ff) - idx
+    "LKASteeringCmdChecksum": 0x1000 - (lkas_active << 11) - (steer_torque_cmd & 0x7ff) - idx
   }
 
   return packer.make_can_msg("ASCMLKASteeringCmd", bus, values)
@@ -52,49 +52,48 @@ def create_adas_keepalive(bus):
   return [CanData(0x409, dat, bus), CanData(0x40a, dat, bus)]
 
 
-def create_gas_regen_command(packer, bus, throttle, idx, enabled, at_full_stop):
+def create_acc_powertrain_command(packer, bus, axle_torque_cmd, idx, powertrain_acc_active, at_full_stop):
   values = {
-    "GasRegenCmdActive": enabled,
+    "ACCActive": powertrain_acc_active,
     "RollingCounter": idx,
-    "GasRegenCmd": throttle,
-    "GasRegenFullStopActive": at_full_stop,
-    "GasRegenAccType": 1,
+    "AxleTorqueCmd": axle_torque_cmd,
+    "ACCFullStopActive": at_full_stop,
+    "ACCType": 1,
   }
 
-  dat = packer.make_can_msg("ASCMGasRegenCmd", bus, values)[1]
-  values["GasRegenChecksum"] = ((1 - enabled) << 24) | \
+  dat = packer.make_can_msg("ACCPowertrainCmd", bus, values)[1]
+  values["ACCPowertrainChecksum"] = ((1 - powertrain_acc_active) << 24) | \
                                (((0xff - dat[1]) & 0xff) << 16) | \
                                (((0xff - dat[2]) & 0xff) << 8) | \
                                ((0x100 - dat[3] - idx) & 0xff)
 
-  return packer.make_can_msg("ASCMGasRegenCmd", bus, values)
+  return packer.make_can_msg("ACCPowertrainCmd", bus, values)
 
 
-def create_friction_brake_command(packer, bus, apply_brake, idx, enabled, near_stop, at_full_stop, CP):
-  mode = 0x1
+def select_friction_brake_mode(brake_control_active, stopping_mode_requested, at_full_stop, brake_idle_mode):
+  """Select ordinary acceleration control (0xA), stopping (0xB), hold (0xD), or the caller's idle mode."""
+  if not brake_control_active:
+    return brake_idle_mode
+  if at_full_stop:
+    return 0xD
+  if stopping_mode_requested:
+    return 0xB
+  return 0xA
 
-  # TODO: Understand this better. Volts and ICE Camera ACC cars are 0x1 when enabled with no brake
-  if enabled and CP.carFingerprint in (CAR.CHEVROLET_BOLT_EUV,):
-    mode = 0x9
 
-  if apply_brake > 0:
-    mode = 0xa
-    if at_full_stop:
-      mode = 0xd
-
-    # TODO: this is to have GM bringing the car to complete stop,
-    # but currently it conflicts with OP controls, so turned off. Not set by all cars
-    #elif near_stop:
-    #  mode = 0xb
-
-  brake = (0x1000 - apply_brake) & 0xfff
-  checksum = (0x10000 - (mode << 12) - brake - idx) & 0xffff
+def create_friction_brake_command(packer, bus, brake_accel_cmd, idx, mode):
+  """EBCMFrictionBrakeCmd: a signed acceleration request in m/s^2 (negative braking, positive a release of
+  retained braking; the EBCM blends regen and friction itself) and the mode nibble. The field is 0.01 m/s^2
+  per count; it is quantized here the way the packer quantizes it, so the checksum covers the bytes sent."""
+  counts = int(math.floor(brake_accel_cmd * 100. + 0.5))
+  raw = counts & 0xfff
+  checksum = (0x10000 - (mode << 12) - raw - idx) & 0xffff
 
   values = {
     "RollingCounter": idx,
     "FrictionBrakeMode": mode,
     "FrictionBrakeChecksum": checksum,
-    "FrictionBrakeCmd": -apply_brake
+    "FrictionBrakeCmd": counts * 0.01
   }
 
   return packer.make_can_msg("EBCMFrictionBrakeCmd", bus, values)

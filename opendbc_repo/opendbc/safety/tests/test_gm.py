@@ -17,9 +17,9 @@ class Buttons:
 
 class GmLongitudinalBase(common.CarSafetyTest, common.LongitudinalGasBrakeSafetyTest):
 
-  RELAY_MALFUNCTION_ADDRS = {0: (0x180, 0x2CB), 2: (0x184,)}  # ASCMLKASteeringCmd, ASCMGasRegenCmd, PSCMStatus
+  RELAY_MALFUNCTION_ADDRS = {0: (0x180, 0x2CB), 2: (0x184,)}  # ASCMLKASteeringCmd, ACCPowertrainCmd, PSCMStatus
 
-  MAX_POSSIBLE_BRAKE = 2 ** 12
+  MAX_POSSIBLE_BRAKE = 2 ** 11  # Magnitude of the most negative signed 12-bit request.
   MAX_BRAKE = 400
 
   MAX_POSSIBLE_GAS = 4000  # reasonably excessive limits, not signal max
@@ -28,12 +28,12 @@ class GmLongitudinalBase(common.CarSafetyTest, common.LongitudinalGasBrakeSafety
   PCM_CRUISE = False  # openpilot can control the PCM state if longitudinal
 
   def _send_brake_msg(self, brake):
-    values = {"FrictionBrakeCmd": -brake}
+    values = {"FrictionBrakeCmd": -brake * 0.01}  # counts -> m/s^2
     return self.packer_chassis.make_can_msg_safety("EBCMFrictionBrakeCmd", self.BRAKE_BUS, values)
 
   def _send_gas_msg(self, gas):
-    values = {"GasRegenCmd": gas}
-    return self.packer.make_can_msg_safety("ASCMGasRegenCmd", 0, values)
+    values = {"AxleTorqueCmd": gas}
+    return self.packer.make_can_msg_safety("ACCPowertrainCmd", 0, values)
 
   # override these tests from CarSafetyTest, GM longitudinal uses button enable
   def _pcm_status_msg(self, enable):
@@ -147,7 +147,7 @@ class TestGmAscmSafety(GmLongitudinalBase, TestGmSafetyBase):
              [0xA1, 1], [0x306, 1], [0x308, 1], [0x310, 1],  # obs bus
              [0x315, 2]]  # ch bus
   FWD_BLACKLISTED_ADDRS: dict[int, list[int]] = {}
-  RELAY_MALFUNCTION_ADDRS = {0: (0x180, 0x2CB)}  # ASCMLKASteeringCmd, ASCMGasRegenCmd
+  RELAY_MALFUNCTION_ADDRS = {0: (0x180, 0x2CB)}  # ASCMLKASteeringCmd, ACCPowertrainCmd
   FWD_BUS_LOOKUP: dict[int, int] = {}
   BRAKE_BUS = 2
 

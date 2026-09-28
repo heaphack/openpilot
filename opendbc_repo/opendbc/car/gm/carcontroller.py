@@ -1,10 +1,12 @@
+import math
 import numpy as np
 from opendbc.can import CANPacker
-from opendbc.car import Bus, DT_CTRL, structs
+from opendbc.car import Bus, DT_CTRL, structs, ACCELERATION_DUE_TO_GRAVITY
 from opendbc.car.lateral import apply_driver_steer_torque_limits
+from opendbc.car.common.filter_simple import FirstOrderFilter
 from opendbc.car.gm import gmcan
 from opendbc.car.common.conversions import Conversions as CV
-from opendbc.car.gm.values import DBC, CanBus, CarControllerParams, CruiseButtons
+from opendbc.car.gm.values import CAR, DBC, CanBus, CarControllerParams, CruiseButtons, LongOwner
 from opendbc.car.interfaces import CarControllerBase
 
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
@@ -21,9 +23,11 @@ class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
     super().__init__(dbc_names, CP)
     self.start_time = 0.
-    self.apply_torque_last = 0
-    self.apply_gas = 0
-    self.apply_brake = 0
+    self.last_steer_torque_cmd = 0
+    # Cached longitudinal outputs for reporting between 25 Hz command updates.
+    self.axle_torque_cmd = 0
+    self.reported_accel = 0.  # cached acceleration output for logging, m/s^2
+    self.brake_accel_cmd = 0.  # the EBCM's signed request, m/s^2: negative braking, positive releasing held braking
     self.last_steer_frame = 0
     self.last_button_frame = 0
     self.cancel_counter = 0
@@ -37,6 +41,125 @@ class CarController(CarControllerBase):
     self.packer_obj = CANPacker(DBC[self.CP.carFingerprint][Bus.radar])
     self.packer_ch = CANPacker(DBC[self.CP.carFingerprint][Bus.chassis])
 
+    # two-owner longitudinal allocation (GMFlags.ASCM_LONG)
+    self.long_owner = LongOwner.POWERTRAIN
+    self.pitch_filter = FirstOrderFilter(0., self.params.PITCH_FILTER_RC, DT_CTRL)
+    # near-stop hold (see CarControllerParams): set when openpilot commits to a stop, cleared by launch intent
+    self.stop_hold_latched = False
+
+  def update_pitch(self, CC):
+    """Filter the device localizer's pitch (north-east-down frame: nose down is negative), the road grade the
+    allocation compensates. Runs every control frame whether or not long control is active, so an engage starts
+    from the current slope rather than the one at the last disengagement; a stale uphill estimate on a descent
+    would hand a braking request to the powertrain as drive torque for the filter's settling time."""
+    if len(CC.orientationNED) == 3:
+      self.pitch_filter.update(CC.orientationNED[1])
+
+  def update_ascm_longitudinal(self, CC, CS, idx):
+    """Build the ACC powertrain and brake commands using the ASCM-inspired allocation, at 25 Hz."""
+    p = self.params
+    v = CS.out.vEgo
+    vehicle_accel_request = CC.actuators.accel
+    stopping = CC.actuators.longControlState == LongCtrlState.stopping
+
+    if not CC.longActive:
+      axle_torque_cmd, brake_accel_cmd, grade_compensated_accel = p.LONG_INACTIVE_AXLE_TORQUE, 0., 0.
+      self.long_owner = LongOwner.POWERTRAIN
+      self.stop_hold_latched = False
+    else:
+      # Near-stop hold: on from the stopping state, through any shouldStop flicker, until long control asks to go
+      # (or goes inactive). Releasing it just returns to the ordinary allocation below: the brake
+      # controller keeps the request and eases it where gravity or creep already supply the acceleration, and the
+      # powertrain takes it where more is needed.
+      self.stop_hold_latched = stopping or (self.stop_hold_latched and vehicle_accel_request <= p.LAUNCH_INTENT_ACCEL)
+
+      # Compensate gravity when calculating powertrain torque and selecting the owner.
+      # The EBCM receives the vehicle acceleration target directly.
+      grade_compensated_accel = vehicle_accel_request + math.sin(self.pitch_filter.x) * ACCELERATION_DUE_TO_GRAVITY
+
+      # Compare acceleration-equivalent actuator effort after accounting for gravity.
+      # The minimum includes released creep; hysteresis margins remain in m/s².
+      minimum_powertrain_accel = p.predict_minimum_powertrain_accel(
+        CS.axle_torque_min, CS.axle_torque_min_valid, v)
+
+      if self.stop_hold_latched or grade_compensated_accel < minimum_powertrain_accel + p.BRAKE_ENTRY_ACCEL_MARGIN:
+        self.long_owner = LongOwner.BRAKE
+      elif grade_compensated_accel > minimum_powertrain_accel + p.BRAKE_RELEASE_ACCEL_MARGIN:
+        self.long_owner = LongOwner.POWERTRAIN
+
+      if self.long_owner == LongOwner.POWERTRAIN:
+        axle_torque_request = p.accel_to_axle_torque(grade_compensated_accel, v)
+        axle_torque_cmd = float(np.clip(axle_torque_request, p.AXLE_TORQUE_SAFETY_MIN, p.AXLE_TORQUE_SAFETY_MAX))
+        brake_accel_cmd = 0.
+      else:
+        # Request vehicle acceleration; the EBCM supplies the braking needed to achieve it.
+        # Near-stop hold keeps the request non-positive. Clamp to the panda's envelope
+        # and quantize to 0.01 m/s^2 so the reported value matches the transmitted request.
+        brake_accel_request = min(vehicle_accel_request, 0.) if self.stop_hold_latched else vehicle_accel_request
+        brake_accel_cmd = math.floor(float(np.clip(brake_accel_request, p.EBCM_ACCEL_SAFETY_MIN, p.EBCM_ACCEL_SAFETY_MAX)) * 100. + 0.5) / 100.
+        axle_torque_cmd = p.AXLE_TORQUE_SAFETY_MIN
+
+    at_full_stop = CC.longActive and CS.out.standstill
+    # Brake hold ends with stop_hold_latched, allowing a brake-owned launch before the wheels move.
+    # 0xB while the near-stop hold is on
+    stopping_mode_requested = CC.longActive and self.stop_hold_latched
+    friction_brake_bus = CanBus.CHASSIS
+    # GM Camera exceptions
+    # TODO: can we always check the longControlState?
+    if self.CP.networkLocation == NetworkLocation.fwdCamera:
+      at_full_stop = at_full_stop and stopping
+      friction_brake_bus = CanBus.POWERTRAIN
+
+    # ACCActive needs to be 1 to avoid cruise faults. It describes the ACC state, not actuation
+    powertrain_acc_active = CC.enabled
+    brake_control_active = self.long_owner == LongOwner.BRAKE
+    brake_idle_mode = 0x9 if CC.enabled and self.CP.carFingerprint == CAR.CHEVROLET_BOLT_EUV else 0x1
+    brake_mode = gmcan.select_friction_brake_mode(
+      brake_control_active, stopping_mode_requested, at_full_stop and self.stop_hold_latched, brake_idle_mode)
+    self.axle_torque_cmd = axle_torque_cmd
+    self.brake_accel_cmd = brake_accel_cmd
+    # Report the signed brake request after hold limiting, clipping, and CAN quantization.
+    self.reported_accel = brake_accel_cmd if self.long_owner == LongOwner.BRAKE else grade_compensated_accel
+    return [
+      gmcan.create_acc_powertrain_command(self.packer_pt, CanBus.POWERTRAIN, axle_torque_cmd, idx, powertrain_acc_active, at_full_stop),
+      gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, brake_accel_cmd, idx, brake_mode),
+    ]
+
+  def update_legacy_longitudinal(self, CC, CS, idx):
+    """Build the ACC powertrain and brake commands using the existing lookup tables, at 25 Hz."""
+    p = self.params
+    vehicle_accel_request = CC.actuators.accel
+    stopping = CC.actuators.longControlState == LongCtrlState.stopping
+
+    if not CC.longActive:
+      axle_torque_cmd, brake_accel_cmd, vehicle_accel_request = p.LONG_INACTIVE_AXLE_TORQUE, 0., 0.
+    else:
+      axle_torque_cmd = float(np.interp(vehicle_accel_request, p.LEGACY_AXLE_TORQUE_BP, p.LEGACY_AXLE_TORQUE_V))
+      # Preserve upstream's count rounding before selecting the brake mode.
+      brake_lookup_counts = [-100. * a for a in p.LEGACY_BRAKE_ACCEL_V]
+      brake_counts = int(round(np.interp(vehicle_accel_request, p.LEGACY_BRAKE_ACCEL_BP, brake_lookup_counts)))
+      brake_accel_cmd = -brake_counts / 100.
+      # Don't allow any gas above inactive regen while stopping.
+      # FIXME: brakes aren't applied immediately when enabling at a stop.
+      if stopping:
+        axle_torque_cmd = p.LONG_INACTIVE_AXLE_TORQUE
+
+    at_full_stop = CC.longActive and CS.out.standstill
+    friction_brake_bus = CanBus.CHASSIS
+    if self.CP.networkLocation == NetworkLocation.fwdCamera:
+      at_full_stop = at_full_stop and stopping
+      friction_brake_bus = CanBus.POWERTRAIN
+
+    powertrain_acc_active = CC.enabled
+    brake_control_active = brake_accel_cmd < 0.
+    brake_idle_mode = 0x9 if CC.enabled and self.CP.carFingerprint == CAR.CHEVROLET_BOLT_EUV else 0x1
+    brake_mode = gmcan.select_friction_brake_mode(brake_control_active, False, at_full_stop, brake_idle_mode)
+    self.axle_torque_cmd, self.brake_accel_cmd, self.reported_accel = axle_torque_cmd, brake_accel_cmd, vehicle_accel_request
+    return [
+      gmcan.create_acc_powertrain_command(self.packer_pt, CanBus.POWERTRAIN, axle_torque_cmd, idx, powertrain_acc_active, at_full_stop),
+      gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, brake_accel_cmd, idx, brake_mode),
+    ]
+
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
     hud_control = CC.hudControl
@@ -44,6 +167,8 @@ class CarController(CarControllerBase):
     hud_v_cruise = hud_control.setSpeed
     if hud_v_cruise > 70:
       hud_v_cruise = 0
+
+    self.update_pitch(CC)
 
     # Send CAN commands.
     can_sends = []
@@ -71,47 +196,25 @@ class CarController(CarControllerBase):
         self.lka_steering_cmd_counter = CS.pt_lka_steering_cmd_counter + 1
 
       if CC.latActive:
-        new_torque = int(round(actuators.torque * self.params.STEER_MAX))
-        apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last, CS.out.steeringTorque, self.params)
+        steer_torque_request = int(round(actuators.torque * self.params.STEER_MAX))
+        steer_torque_cmd = apply_driver_steer_torque_limits(
+          steer_torque_request, self.last_steer_torque_cmd, CS.out.steeringTorque, self.params)
       else:
-        apply_torque = 0
+        steer_torque_cmd = 0
 
       self.last_steer_frame = self.frame
-      self.apply_torque_last = apply_torque
+      self.last_steer_torque_cmd = steer_torque_cmd
       idx = self.lka_steering_cmd_counter % 4
-      can_sends.append(gmcan.create_steering_control(self.packer_pt, CanBus.POWERTRAIN, apply_torque, idx, CC.latActive))
+      can_sends.append(gmcan.create_steering_command(self.packer_pt, CanBus.POWERTRAIN, steer_torque_cmd, idx, CC.latActive))
 
     if self.CP.openpilotLongitudinalControl:
-      # Gas/regen, brakes, and UI commands - all at 25Hz
+      # Powertrain, brakes, and UI commands - all at 25Hz
       if self.frame % 4 == 0:
-        stopping = actuators.longControlState == LongCtrlState.stopping
-        if not CC.longActive:
-          # ASCM sends max regen when not enabled
-          self.apply_gas = self.params.INACTIVE_REGEN
-          self.apply_brake = 0
-        else:
-          self.apply_gas = float(np.interp(actuators.accel, self.params.GAS_LOOKUP_BP, self.params.GAS_LOOKUP_V))
-          self.apply_brake = int(round(np.interp(actuators.accel, self.params.BRAKE_LOOKUP_BP, self.params.BRAKE_LOOKUP_V)))
-          # Don't allow any gas above inactive regen while stopping
-          # FIXME: brakes aren't applied immediately when enabling at a stop
-          if stopping:
-            self.apply_gas = self.params.INACTIVE_REGEN
-
         idx = (self.frame // 4) % 4
-
-        at_full_stop = CC.longActive and CS.out.standstill
-        near_stop = CC.longActive and (abs(CS.out.vEgo) < self.params.NEAR_STOP_BRAKE_PHASE)
-        friction_brake_bus = CanBus.CHASSIS
-        # GM Camera exceptions
-        # TODO: can we always check the longControlState?
-        if self.CP.networkLocation == NetworkLocation.fwdCamera:
-          at_full_stop = at_full_stop and stopping
-          friction_brake_bus = CanBus.POWERTRAIN
-
-        # GasRegenCmdActive needs to be 1 to avoid cruise faults. It describes the ACC state, not actuation
-        can_sends.append(gmcan.create_gas_regen_command(self.packer_pt, CanBus.POWERTRAIN, self.apply_gas, idx, CC.enabled, at_full_stop))
-        can_sends.append(gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, self.apply_brake,
-                                                             idx, CC.enabled, near_stop, at_full_stop, self.CP))
+        if self.params.ASCM_LONG:
+          can_sends.extend(self.update_ascm_longitudinal(CC, CS, idx))
+        else:
+          can_sends.extend(self.update_legacy_longitudinal(CC, CS, idx))
 
         # Send dashboard UI commands (ACC status)
         send_fcw = hud_alert == VisualAlert.fcw
@@ -154,10 +257,11 @@ class CarController(CarControllerBase):
         can_sends.append(gmcan.create_pscm_status(self.packer_pt, CanBus.CAMERA, CS.pscm_status))
 
     new_actuators = actuators.as_builder()
-    new_actuators.torque = self.apply_torque_last / self.params.STEER_MAX
-    new_actuators.torqueOutputCan = self.apply_torque_last
-    new_actuators.gas = self.apply_gas
-    new_actuators.brake = self.apply_brake
+    new_actuators.torque = self.last_steer_torque_cmd / self.params.STEER_MAX
+    new_actuators.torqueOutputCan = self.last_steer_torque_cmd
+    new_actuators.accel = self.reported_accel
+    new_actuators.gas = self.axle_torque_cmd
+    new_actuators.brake = max(-self.brake_accel_cmd, 0.)
 
     self.frame += 1
     return new_actuators, can_sends

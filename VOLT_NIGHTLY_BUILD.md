@@ -66,3 +66,9 @@ FW 2.0 firmware fingerprinting groundwork (2026-09-28), patch set 05:
   EBCM, brake booster and ASCM; the PSCM had not answered because the panda dropped the request. Values are recorded
   in volt-patches/05-fw-2.0/README.md. GM `FW_VERSIONS` is still empty: the Volt is still CAN-fingerprinted.
 - Not flashed and not road-tested by the agent.
+- Stage 2 (same day): `FW_VERSIONS` entry for CAR.CHEVROLET_VOLT (eps 0x242, engine 0x7e0, hybrid 0x7e1, abs 0x7e5,
+  electricBrakeBooster 0x7e6; $C1 and $CB values from three identical live runs), $C1/$CB requests switched to
+  `logging=False`, `extra_ecus` back to 0x24b only. Full FW fingerprint test module: 15 passed; GM tests: 43 passed;
+  ruff clean. Replaying the live responses through `match_fw_to_car` gives an exact CHEVROLET_VOLT match.
+  Python-only, no safety change, no firmware rebuild. The Volt now fingerprints by firmware when the query succeeds;
+  CAN fingerprinting remains the fallback. Not road-tested by the agent.

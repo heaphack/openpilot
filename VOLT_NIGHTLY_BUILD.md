@@ -52,3 +52,17 @@ the prebuilt marker, bootstub, and signing keys are retained.
 The validated manual-resume configuration is preserved at `backup/volt-ascm-manual-resume-20260927`
 (c712065b4). Earlier pre-reset work remains at `backup/volt-ascm-before-clean-20260927`.
 This update has not been pushed or flashed, and no new road test was performed by the agent.
+
+FW 2.0 firmware fingerprinting groundwork (2026-09-28), patch set 05:
+- `39dd952e8` gm fw 2.0: the GM FW query now has a second request set with the OBD response offset (+0x8) for the
+  0x7E0-0x7E7 modules, ECU-type whitelists per address range, and the Volt's PSCM, ECM, HPCM, EBCM and brake booster
+  as data-collection ECUs. GM query benchmark reference raised from 1.0 s to 2.0 s. Fingerprint config tests: 9 passed.
+- `f834b2fac` gm: ELM327 safety mode also transmits the PSCM diagnostic address 0x242 (same ISO 15765-2 frame-type
+  check as 0x24b). Fork-only: 0x242 is a periodic message on BYD and MG. ELM327 safety test: 8 passed; MISRA: passed.
+- Panda H7 firmware rebuilt from `panda/` against the branch's opendbc_repo with the development key.
+  Embedded source revision f834b2fa, version marker DEV-f834b2fa-DEBUG. Signed firmware 79848 bytes,
+  SHA256 15b1ced22c84b133103976a1259a6b1a3c1e437c6418df8700503988c5ee436a. Body firmware rebuilt alongside (version marker only).
+- Two live query runs on the 2017 Volt before the safety change returned identical part numbers for the ECM, HPCM,
+  EBCM, brake booster and ASCM; the PSCM had not answered because the panda dropped the request. Values are recorded
+  in volt-patches/05-fw-2.0/README.md. GM `FW_VERSIONS` is still empty: the Volt is still CAN-fingerprinted.
+- Not flashed and not road-tested by the agent.

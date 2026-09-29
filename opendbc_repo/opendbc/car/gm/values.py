@@ -360,20 +360,40 @@ GM_FW_REQUESTS = [
   GM_BASE_MODEL_PART_NUMBER_ALPHA_CODE_REQUEST,
 ]
 
-GM_RX_OFFSET = 0x400
+GM_RX_OFFSET = 0x400      # GMLAN physical diagnostic IDs 0x241-0x25F answer at request + 0x400
+GM_OBD_RX_OFFSET = 0x8    # emissions-related modules at 0x7E0-0x7E7 answer at request + 0x8 (0x7E8-0x7EF)
+
+# ECU types reached through each address range. The FW query sends a request only to ECUs whose
+# type is whitelisted, so each range gets its own response offset without doubling the query time.
+GM_GMLAN_ECUS = [Ecu.eps, Ecu.fwdCamera]
+GM_OBD_ECUS = [Ecu.engine, Ecu.hybrid, Ecu.abs, Ecu.electricBrakeBooster]
+
+
+def gm_fw_request(req: bytes, rx_offset: int, whitelist_ecus: list, logging: bool = True) -> Request:
+  return Request(
+    [StdQueries.SHORT_TESTER_PRESENT_REQUEST, req],
+    [StdQueries.SHORT_TESTER_PRESENT_RESPONSE, GM_FW_RESPONSE + bytes([req[-1]])],
+    whitelist_ecus=whitelist_ecus,
+    rx_offset=rx_offset,
+    bus=0,
+    logging=logging,
+  )
+
 
 FW_QUERY_CONFIG = FwQueryConfig(
   fw_version_regex=br"[\x00-\xff]+",
-  requests=[request for req in GM_FW_REQUESTS for request in [
-    Request(
-      [StdQueries.SHORT_TESTER_PRESENT_REQUEST, req],
-      [StdQueries.SHORT_TESTER_PRESENT_RESPONSE, GM_FW_RESPONSE + bytes([req[-1]])],
-      rx_offset=GM_RX_OFFSET,
-      bus=0,
-      logging=True,
-    ),
-  ]],
-  extra_ecus=[(Ecu.fwdCamera, 0x24b, None)],
+  requests=[gm_fw_request(req, GM_RX_OFFSET, GM_GMLAN_ECUS) for req in GM_FW_REQUESTS] +
+           [gm_fw_request(req, GM_OBD_RX_OFFSET, GM_OBD_ECUS) for req in GM_FW_REQUESTS],
+  # Data collection only: responses from these ECUs are logged, not matched on.
+  # Addresses and bus from the GDS2 VAT database (2017 Chevrolet Volt, GMLAN high speed bus).
+  extra_ecus=[
+    (Ecu.fwdCamera, 0x24b, None),             # FCM on camera-ACC cars; the ASCM on ASCM cars such as the Volt
+    (Ecu.eps, 0x242, None),                   # Power Steering Control Module
+    (Ecu.engine, 0x7e0, None),                # Engine Control Module
+    (Ecu.hybrid, 0x7e1, None),                # Hybrid Powertrain Control Module
+    (Ecu.abs, 0x7e5, None),                   # Electronic Brake Control Module
+    (Ecu.electricBrakeBooster, 0x7e6, None),  # Brake Booster Control Module
+  ],
 )
 
 # TODO: detect most of these sets live

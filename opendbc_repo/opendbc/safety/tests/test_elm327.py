@@ -8,10 +8,12 @@ from opendbc.safety.tests.libsafety import libsafety_py
 from opendbc.safety.tests.test_defaults import TestDefaultRxHookBase
 
 GM_CAMERA_DIAG_ADDR = 0x24B
+GM_PSCM_DIAG_ADDR = 0x242
+GM_DIAG_ADDRS = [GM_CAMERA_DIAG_ADDR, GM_PSCM_DIAG_ADDR]
 
 
 class TestElm327(TestDefaultRxHookBase):
-  TX_MSGS = [[addr, bus] for addr in [GM_CAMERA_DIAG_ADDR, *range(0x600, 0x800),
+  TX_MSGS = [[addr, bus] for addr in [*GM_DIAG_ADDRS, *range(0x600, 0x800),
                                       *range(0x18DA00F1, 0x18DB00F1, 0x100),  # 29-bit UDS physical addressing
                                       *[0x18DB33F1],  # 29-bit UDS functional address
                                       ] for bus in range(4)]
@@ -36,12 +38,13 @@ class TestElm327(TestDefaultRxHookBase):
 
     # TODO: perform this check for all addresses
     # 4 to 15 are reserved ISO-TP frame types (https://en.wikipedia.org/wiki/ISO_15765-2)
-    for byte in range(0xff):
-      should_tx = (byte >> 4) <= 3
-      self.assertEqual(should_tx, self._tx(common.make_msg(0, GM_CAMERA_DIAG_ADDR, dat=bytes([byte] * 8))))
+    for addr in GM_DIAG_ADDRS:
+      for byte in range(0xff):
+        should_tx = (byte >> 4) <= 3
+        self.assertEqual(should_tx, self._tx(common.make_msg(0, addr, dat=bytes([byte] * 8))))
 
-    # test GM camera diagnostic address with malformed length
-    self.assertEqual(False, self._tx(common.make_msg(0, GM_CAMERA_DIAG_ADDR, dat=bytes([0x00] * 7))))
+      # test GM diagnostic addresses with malformed length
+      self.assertEqual(False, self._tx(common.make_msg(0, addr, dat=bytes([0x00] * 7))))
 
   def test_tx_hook_on_wrong_safety_mode(self):
     # No point, since we allow many diagnostic addresses

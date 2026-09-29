@@ -380,20 +380,16 @@ def gm_fw_request(req: bytes, rx_offset: int, whitelist_ecus: list, logging: boo
   )
 
 
+# Responses to these identifiers are matched against FW_VERSIONS; every other identifier is logged only.
+GM_MATCH_REQUESTS = [GM_SOFTWARE_MODULE_1_REQUEST, GM_END_MODEL_PART_NUMBER_REQUEST]
+
 FW_QUERY_CONFIG = FwQueryConfig(
   fw_version_regex=br"[\x00-\xff]+",
-  requests=[gm_fw_request(req, GM_RX_OFFSET, GM_GMLAN_ECUS) for req in GM_FW_REQUESTS] +
-           [gm_fw_request(req, GM_OBD_RX_OFFSET, GM_OBD_ECUS) for req in GM_FW_REQUESTS],
-  # Data collection only: responses from these ECUs are logged, not matched on.
-  # Addresses and bus from the GDS2 VAT database (2017 Chevrolet Volt, GMLAN high speed bus).
-  extra_ecus=[
-    (Ecu.fwdCamera, 0x24b, None),             # FCM on camera-ACC cars; the ASCM on ASCM cars such as the Volt
-    (Ecu.eps, 0x242, None),                   # Power Steering Control Module
-    (Ecu.engine, 0x7e0, None),                # Engine Control Module
-    (Ecu.hybrid, 0x7e1, None),                # Hybrid Powertrain Control Module
-    (Ecu.abs, 0x7e5, None),                   # Electronic Brake Control Module
-    (Ecu.electricBrakeBooster, 0x7e6, None),  # Brake Booster Control Module
-  ],
+  requests=[gm_fw_request(req, GM_RX_OFFSET, GM_GMLAN_ECUS, logging=req not in GM_MATCH_REQUESTS) for req in GM_FW_REQUESTS] +
+           [gm_fw_request(req, GM_OBD_RX_OFFSET, GM_OBD_ECUS, logging=req not in GM_MATCH_REQUESTS) for req in GM_FW_REQUESTS],
+  # Data collection only: responses from this ECU are logged, not matched on.
+  # 0x24b is the FCM on camera-ACC cars and the ASCM on ASCM cars such as the Volt, so it cannot be fingerprinted on.
+  extra_ecus=[(Ecu.fwdCamera, 0x24b, None)],
 )
 
 # TODO: detect most of these sets live

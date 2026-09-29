@@ -1,6 +1,9 @@
 # ruff: noqa: E501
 """ AUTO-FORMATTED USING opendbc/car/debug/format_fingerprints.py, EDIT STRUCTURE THERE."""
+from opendbc.car.structs import CarParams
 from opendbc.car.gm.values import CAR
+
+Ecu = CarParams.Ecu
 
 # Trailblazer also matches as a SILVERADO, TODO: split with fw versions
 # FIXME: There are Equinox users with different message lengths, specifically 304 and 320
@@ -75,5 +78,28 @@ FINGERPRINTS = {
   }],
 }
 
-FW_VERSIONS: dict[str, dict[tuple, list[bytes]]] = {
+# GM values are four-byte big-endian part numbers from GMLAN mode $1A: Software Module 1 ($C1) and End Model ($CB).
+FW_VERSIONS = {
+  CAR.CHEVROLET_VOLT: {
+    (Ecu.eps, 0x242, None): [
+      b'\x02\x8bo(',
+      b'\x05\x024\xf6',
+    ],
+    (Ecu.engine, 0x7e0, None): [
+      b'\x00\xc1\x87\xc3',
+      b'\x00\xc1\x88%',
+    ],
+    (Ecu.hybrid, 0x7e1, None): [
+      b'\x01r\x96\xc3',
+      b'\x01r{l',
+    ],
+    (Ecu.abs, 0x7e5, None): [
+      b'\x01d\xf7o',
+      b'\x05\x04X\xf4',
+    ],
+    (Ecu.electricBrakeBooster, 0x7e6, None): [
+      b'\x01eB\x0b',
+      b'\x05\x03z\xd6',
+    ],
+  },
 }

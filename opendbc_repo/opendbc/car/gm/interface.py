@@ -19,13 +19,18 @@ NetworkLocation = structs.CarParams.NetworkLocation
 # with alpha/beta following a bicycle-model speed law (Ackermann 1/v**2 term plus a constant), and the
 # torque table is the real root of that cubic. VOLT_FF_GAIN_* is a speed-scheduled correction fitted
 # against ~1.5M steady-state samples from drive logs: GM's table runs ~30 % strong above 10 m/s and
-# the 1/v**2 law loses the torque floor the car shows between 5 and 9 m/s.
-VOLT_FF_L_EFF = 10.07          # alpha 1/v**2 coefficient (effective wheelbase x steer ratio, hand-wheel rad)
+# the 1/v**2 law loses the torque floor the car shows between 5 and 9 m/s. Below 5.5 m/s the correction
+# keeps rising: a least-squares fit of commanded holding torque against the un-gained cubic on the hands-off,
+# steady-state, 5-60 deg samples gives 1.7 (90 % interval 1.6-2.0, 6 s of data) at 4.5-5.5 m/s and 2.5
+# (1.9-3.8, 5 s across 28 segments) at 3.0-4.0 m/s. The 3.5 m/s breakpoint sits at the low end of that
+# interval so the feedforward does not over-supply at parking speeds; steering is active from 3.13 m/s.
+VOLT_FF_L_EFF = 10.07          # alpha 1/v**2 coefficient (fitted; not wheelbase x steer ratio, it also folds in
+                               # the torque-to-lateral-acceleration factor, hand-wheel rad per Nm)
 VOLT_FF_UNDERSTEER = 0.01266   # alpha constant term
 VOLT_FF_CUBIC_1 = 3.616        # beta 1/v**2 coefficient
 VOLT_FF_CUBIC_0 = 0.00106      # beta constant term
-VOLT_FF_GAIN_BP = [5.5, 7.5, 9.5, 12.0, 20.0, 31.0]   # m/s
-VOLT_FF_GAIN_V = [1.6, 1.2, 0.93, 0.80, 0.70, 0.76]
+VOLT_FF_GAIN_BP = [3.5, 5.5, 7.5, 9.5, 12.0, 20.0, 31.0]   # m/s
+VOLT_FF_GAIN_V = [2.2, 1.6, 1.2, 0.93, 0.80, 0.70, 0.76]
 VOLT_FF_MIN_SPEED = 3.0        # m/s, below minSteerSpeed; keeps alpha/beta finite
 VOLT_FF_STEER_MAX_NM = 3.0     # CarControllerParams.STEER_MAX (300) == 3 Nm
 

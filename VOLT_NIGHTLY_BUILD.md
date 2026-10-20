@@ -20,9 +20,15 @@ Validation:
 - GM car tests 43 passed; car interfaces 255 passed; FW fingerprint 15 passed.
 - GM safety 268 passed (24 skipped); signed brake safety 5 passed; ELM327 safety 8 passed (1 skipped).
 
-Panda H7 and body firmware rebuilt from `panda/` against this branch's opendbc_repo with the debug key
-(`PYTHONPATH=../opendbc_repo python3 -m SCons board/obj/panda_h7.bin.signed board/obj/body_h7.bin.signed`).
-Version marker DEV-903b88df-DEBUG, signed H7 firmware 79468 bytes,
-SHA256 2b506c85013427138d5633cdedcb6c75de84a3da8b3dfc260baa2189c792791d.
+Panda H7 and body firmware and bootstubs rebuilt from `panda/` against this branch's opendbc_repo with the debug key:
+
+    PYTHONPATH=../opendbc_repo python3 -m SCons board/obj/bootstub.panda_h7.bin board/obj/bootstub.body_h7.bin \
+      board/obj/panda_h7.bin.signed board/obj/body_h7.bin.signed
+
+The bootstubs must be rebuilt too. Upstream v0.11.3 ships a RELEASE bootstub that only accepts comma's release
+key (v0.11.2 shipped a DEBUG one), so with the upstream bootstub pandad's recovery flash leaves the panda stuck
+in bootstub with the debug-signed app. Version marker DEV-7ddfa669-DEBUG,
+bootstub.panda_h7.bin SHA256 c4519d1a4aa0f74034a42a55dde8125c50fc179b571092217c7c45932f98d22b,
+panda_h7.bin.signed SHA256 fa40ce110ecd91fc780e9d661f64a3989ea6038fcbb72e692cfa3b656068cfba.
 
 The v0.11.2 build is preserved on `volt-ascm-nightly-chestnut`. Not flashed or road-tested by the agent.

@@ -905,6 +905,17 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
     ET.NO_ENTRY: NoEntryAlert("Low Memory: Reboot Your Device"),
   },
 
+  EventName.ascmOemOwned: {
+    ET.PERMANENT: NormalPermanentAlert("OEM cruise owns control", "Cycle cruise main to enable openpilot"),
+    ET.NO_ENTRY: NoEntryAlert("OEM cruise owns control. Cycle cruise main to enable openpilot."),
+    ET.IMMEDIATE_DISABLE: ImmediateDisableAlert("ASCM ownership changed"),
+  },
+
+  EventName.ascmUnavailable: {
+    ET.NO_ENTRY: NoEntryAlert("ASCM not ready. Check status and cycle cruise main."),
+    ET.IMMEDIATE_DISABLE: ImmediateDisableAlert("ASCM unavailable"),
+  },
+
   EventName.accFaulted: {
     ET.IMMEDIATE_DISABLE: ImmediateDisableAlert("Cruise Fault: Restart the Car"),
     ET.PERMANENT: NormalPermanentAlert("Cruise Fault: Restart the car to engage"),

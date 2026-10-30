@@ -4,6 +4,7 @@ from opendbc.car import DT_CTRL, structs
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.interfaces import MAX_CTRL_SPEED
 from opendbc.car.toyota.values import ToyotaFlags
+from opendbc.car.gm.values import GMFlags
 
 from openpilot.selfdrive.selfdrived.events import Events
 
@@ -27,6 +28,11 @@ class CarEvents:
       return Events()
 
     events = self.create_common_events(CS, CS_prev)
+    if self.CP.brand == 'gm' and self.CP.flags & GMFlags.ASCM_C11:
+      if CS.ascmOemOwned:
+        events.add(EventName.ascmOemOwned)
+      elif not CS.ascmReady:
+        events.add(EventName.ascmUnavailable)
 
     if self.CP.brand == 'chrysler':
       # Low speed steer alert hysteresis logic

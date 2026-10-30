@@ -62,10 +62,9 @@ def create_acc_powertrain_command(packer, bus, axle_torque_cmd, idx, powertrain_
   }
 
   dat = packer.make_can_msg("ACCPowertrainCmd", bus, values)[1]
-  values["ACCPowertrainChecksum"] = ((1 - powertrain_acc_active) << 24) | \
-                               (((0xff - dat[1]) & 0xff) << 16) | \
-                               (((0xff - dat[2]) & 0xff) << 8) | \
-                               ((0x100 - dat[3] - idx) & 0xff)
+  counter = (dat[0] >> 6) & 3
+  protected = ((dat[0] & 1) << 24) | int.from_bytes(dat[1:4], "big")
+  values["ACCPowertrainChecksum"] = (-(protected + counter)) & 0x1FFFFFF
 
   return packer.make_can_msg("ACCPowertrainCmd", bus, values)
 
@@ -81,7 +80,7 @@ def select_friction_brake_mode(brake_control_active, stopping_mode_requested, at
   return 0xA
 
 
-def create_friction_brake_command(packer, bus, brake_accel_cmd, idx, mode):
+def create_friction_brake_command(packer, bus, brake_accel_cmd, idx, mode, c11=False):
   """EBCMFrictionBrakeCmd: a signed acceleration request in m/s^2 (negative braking, positive a release of
   retained braking; the EBCM blends regen and friction itself) and the mode nibble. The field is 0.01 m/s^2
   per count; it is quantized here the way the packer quantizes it, so the checksum covers the bytes sent."""
@@ -96,7 +95,8 @@ def create_friction_brake_command(packer, bus, brake_accel_cmd, idx, mode):
     "FrictionBrakeCmd": counts * 0.01
   }
 
-  return packer.make_can_msg("EBCMFrictionBrakeCmd", bus, values)
+  msg = packer.make_can_msg("EBCMFrictionBrakeCmd", bus, values)
+  return CanData(0x37F, msg[1], bus) if c11 else msg
 
 
 def create_acc_dashboard_command(packer, bus, enabled, target_speed_kph, hud_control, fcw):

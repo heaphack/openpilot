@@ -13,6 +13,7 @@ from openpilot.common.realtime import config_realtime_process, Priority, Ratekee
 from openpilot.common.swaglog import cloudlog, ForwardingHandler
 
 from opendbc.car import DT_CTRL, structs
+from opendbc.car.gm.values import GMFlags
 from opendbc.car.can_definitions import CanData, CanRecvCallable, CanSendCallable
 from opendbc.car.carlog import carlog
 from opendbc.car.fw_versions import ObdCallback
@@ -231,7 +232,12 @@ class Car:
       # signal pandad to switch to car safety mode
       self.params.put_bool("ControlsReady", True)
 
-    if self.sm.all_alive(['carControl']):
+    controls_alive = self.sm.all_alive(['carControl'])
+    c11 = self.CP.brand == "gm" and self.CP.flags & GMFlags.ASCM_C11
+    if controls_alive or c11:
+      if not controls_alive:
+        # Continue qualifying/releasing c11 inputs if the controls producer stops.
+        CC = structs.CarControl().as_reader()
       # send car controls over can
       now_nanos = self.can_log_mono_time if REPLAY else int(time.monotonic() * 1e9)
       self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos)

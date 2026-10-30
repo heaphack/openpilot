@@ -265,5 +265,67 @@ class TestGmIgnition(common.SafetyTestBase):
     self.assertFalse(self.safety.get_ignition_can())
 
 
+class TestGmC11Safety(TestGmAscmInterceptorSafety):
+  TX_MSGS = [[0x180, 1], [0x2CB, 1], [0x370, 1], [0x37F, 1]]
+  EXTRA_SAFETY_PARAM = GMSafetyFlags.ASCM_C11 | GMSafetyFlags.EV
+
+  def _torque_cmd_msg(self, torque, steer_req=None):
+    steer_req = bool(torque) if steer_req is None else steer_req
+    values = {"LKASteeringCmd": torque, "LKASteeringCmdActive": steer_req}
+    return self.packer.make_can_msg_safety("ASCMLKASteeringCmd", 1, values)
+
+  def _send_gas_msg(self, gas):
+    return self.packer.make_can_msg_safety("ACCPowertrainCmd", 1, {"AxleTorqueCmd": gas})
+
+  def _send_brake_msg(self, brake):
+    mode = 1 if brake == 0 else 10
+    msg = self.packer_chassis.make_can_msg_safety("EBCMFrictionBrakeCmd", 1,
+                                                {"FrictionBrakeCmd": -brake * .01, "FrictionBrakeMode": mode})
+    msg[0].addr = 0x37F
+    return msg
+
+  def test_brake_on_chassis_bus_still_checked(self):
+    # c11 never transmits on either actuator network, even a release.
+    for allowed in (False, True):
+      self.safety.set_controls_allowed(allowed)
+      for bus in (0, 1, 2):
+        self.assertFalse(self._tx(self.packer_chassis.make_can_msg_safety("EBCMFrictionBrakeCmd", bus, {"FrictionBrakeMode": 1})))
+
+  def test_brake_modes_checked_at_zero_request(self):
+    for controls in (False, True):
+      self.safety.set_controls_allowed(controls)
+      for mode in range(16):
+        msg = self._send_brake_msg(0)
+        msg[0].data[0] = mode << 4
+        self.assertEqual(self._tx(msg), mode == 1 or (controls and mode in (10, 11, 13)), (controls, mode))
+
+  def test_gas_and_ui_active_bits(self):
+    self.safety.set_controls_allowed(False)
+    self.assertFalse(self._tx(self._torque_cmd_msg(0, steer_req=1)))
+    self.safety.set_controls_allowed(False)
+    for field in ('ACCActive', 'ACCFullStopActive'):
+      msg = self.packer.make_can_msg_safety('ACCPowertrainCmd', 1, {'AxleTorqueCmd': -650, field: 1})
+      self.assertFalse(self._tx(msg))
+    self.assertFalse(self._tx(self.packer.make_can_msg_safety('ASCMActiveCruiseControlStatus', 1, {'ACCCmdActive': 1})))
+
+  def test_command_lengths_and_frame_types(self):
+    from opendbc.safety.tests.libsafety.libsafety_py import make_CANPacket
+    for addr, size in ((0x180, 4), (0x2CB, 8), (0x37F, 5), (0x370, 6)):
+      for length in range(9):
+        if length != size:
+          self.assertFalse(self._tx(make_CANPacket(addr, 1, bytes(length))))
+    for flag in ('extended', 'fd'):
+      msg = self._send_brake_msg(0)
+      setattr(msg[0], flag, 1)
+      self.assertFalse(self._tx(msg))
+
+  def test_oem_transmissions_do_not_trip_relay(self):
+    from opendbc.safety.tests.libsafety.libsafety_py import make_CANPacket
+    for _ in range(3):
+      for addr, bus, size in ((0x180, 0, 4), (0x2CB, 0, 8), (0x315, 2, 5), (0x37D, 1, 8), (0x37C, 2, 8)):
+        self._rx(make_CANPacket(addr, bus, bytes(size)))
+    self.assertFalse(self.safety.get_relay_malfunction())
+
+
 if __name__ == "__main__":
   unittest.main()

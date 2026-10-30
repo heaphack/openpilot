@@ -12,7 +12,7 @@ from opendbc.car.gm.values import CAR, DBC, CanBus, GMFlags, LongOwner
 
 def make_controller(car=CAR.CHEVROLET_VOLT, network="gateway", auto_resume=True, flags=None):
   cp = structs.CarParams.new_message(carFingerprint=car, networkLocation=network, openpilotLongitudinalControl=True,
-                                    flags=int(car.config.flags) if flags is None else int(flags), autoResumeSng=auto_resume)
+                                    flags=int(car.config.flags & ~GMFlags.ASCM_C11) if flags is None else int(flags), autoResumeSng=auto_resume)
   return CarController(DBC[car], cp)
 
 

@@ -117,6 +117,8 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     selfdrivedLagging @81;
     resumeBlocked @82;
     carNotReady @103;
+    ascmUnavailable @105;
+    ascmOemOwned @106;
     steerTimeLimit @83;
     vehicleSensorsInvalid @84;
     locationdTemporaryError @85;

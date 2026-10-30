@@ -28,6 +28,7 @@ typedef enum {
 } GmHardware;
 static GmHardware gm_hw = GM_ASCM;
 static bool gm_pcm_cruise = false;
+static bool gm_c11 = false;
 
 static void gm_rx_hook(const CANPacket_t *msg) {
   const int GM_STANDSTILL_THRSLD = 10;  // 0.311kph
@@ -101,12 +102,21 @@ static bool gm_tx_hook(const CANPacket_t *msg) {
     .type = TorqueDriverLimited,
   };
 
-  bool tx = true;
+  bool tx = !gm_c11 || ((msg->extended == 0U) && (msg->fd == 0U));
 
   // BRAKE: the EBCM request is a signed acceleration in 0.01 m/s^2 counts, not a brake pressure
-  if (msg->addr == 0x315U) {
+  if ((msg->addr == 0x315U) || (gm_c11 && msg_matches(msg, 0x37FU, 1U))) {
     const int raw = ((msg->data[0] & 0xFU) << 8) + msg->data[1];
     const int request = to_signed(raw, 12);
+    if (gm_c11) {
+      const unsigned int mode = msg->data[0] >> 4;
+      const bool release = (mode == 1U) && (request == 0);
+      const bool active_mode = (mode == 10U) || (mode == 11U) || (mode == 13U);
+      // Hold/active modes can actuate even with zero requested acceleration.
+      if (!release && (!get_longitudinal_allowed() || !active_mode)) {
+        tx = false;
+      }
+    }
     if (longitudinal_accel_checks(request, *gm_long_limits)) {
       tx = false;
     }
@@ -118,6 +128,9 @@ static bool gm_tx_hook(const CANPacket_t *msg) {
     desired_torque = to_signed(desired_torque, 11);
 
     bool steer_req = GET_BIT(msg, 3U);
+    if (gm_c11 && !controls_allowed && steer_req) {
+      tx = false;
+    }
 
     if (steer_torque_cmd_checks(desired_torque, steer_req, GM_STEERING_LIMITS)) {
       tx = false;
@@ -133,11 +146,19 @@ static bool gm_tx_hook(const CANPacket_t *msg) {
     bool violation = false;
     // Check the ACC-active flag separately from the torque magnitude.
     violation |= !controls_allowed && powertrain_acc_active;
+    if (gm_c11) {
+      const bool stop = (msg->data[1] & 0x20U) != 0U;
+      violation |= !get_longitudinal_allowed() && (stop || powertrain_acc_active);
+    }
     violation |= longitudinal_gas_checks(axle_torque_cmd_counts, *gm_long_limits);
 
     if (violation) {
       tx = false;
     }
+  }
+
+  if (gm_c11 && (msg->addr == 0x370U) && !controls_allowed && GET_BIT(msg, 23U)) {
+    tx = false;
   }
 
   // BUTTONS: used for resume spamming and cruise cancellation with stock longitudinal
@@ -157,6 +178,8 @@ static safety_config gm_init(uint16_t param) {
   const uint16_t GM_PARAM_HW_CAM = 1;
   const uint16_t GM_PARAM_EV = 4;
   const uint16_t GM_PARAM_ASCM_INTERCEPTOR = 8;
+  const uint16_t GM_PARAM_ASCM_C11 = 16;
+  gm_c11 = GET_FLAG(param, GM_PARAM_ASCM_C11);
 
   // common safety checks assume unscaled integer values
   static const int GM_GAS_TO_CAN = 8;  // 1 / 0.125
@@ -206,6 +229,14 @@ static safety_config gm_init(uint16_t param) {
     {0x315, 1, 5, .check_relay = false},
     // ch bus
     {0x315, 2, 5, .check_relay = false},
+  };
+
+  // c11 leaves the physical ASCM as the only transmitter on the actuator networks.
+  static const CanMsg GM_C11_TX_MSGS[] = {
+    {0x180, 1, 4, .check_relay = false},
+    {0x2CB, 1, 8, .check_relay = false},
+    {0x37F, 1, 5, .check_relay = false},
+    {0x370, 1, 6, .check_relay = false},
   };
 
   static const LongitudinalLimits GM_CAM_LONG_LIMITS = {
@@ -276,6 +307,14 @@ static safety_config gm_init(uint16_t param) {
   const bool gm_ev = GET_FLAG(param, GM_PARAM_EV);
   if (gm_ev) {
     SET_RX_CHECKS(gm_ev_rx_checks, ret);
+  }
+
+  if (gm_c11) {
+    // This flag selects the c11 object transport explicitly, independent of fingerprint traffic.
+    gm_hw = GM_ASCM;
+    gm_pcm_cruise = false;
+    gm_long_limits = &GM_ASCM_LONG_LIMITS;
+    SET_TX_MSGS(GM_C11_TX_MSGS, ret);
   }
 
   // ASCM does not forward any messages

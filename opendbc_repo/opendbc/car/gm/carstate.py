@@ -1,4 +1,5 @@
 import copy
+from opendbc.car.gm.ascm import AscmSupervisor
 from opendbc.can import CANDefine, CANParser
 from opendbc.car import Bus, create_button_events, structs
 from opendbc.car.common.conversions import Conversions as CV
@@ -31,6 +32,12 @@ class CarState(CarStateBase):
     self.cruise_standstill = False
 
     self.distance_button = 0
+    self.ascm = AscmSupervisor()
+    self.ascm_now = 0.
+    self.ascm_button_enable = False
+    self.ascm_main = None
+    self.ascm_run = None
+    self.loopback_lka_steering_cmd_counter = 0
 
     # powertrain axle torque limits (0x1C5), GMFlags.ASCM_LONG only
     self.axle_torque = 0.
@@ -39,6 +46,8 @@ class CarState(CarStateBase):
     self.axle_torque_min_valid = False
 
   def update_button_enable(self, buttonEvents: list[structs.CarState.ButtonEvent]):
+    if self.CP.flags & GMFlags.ASCM_C11:
+      return self.ascm_button_enable
     if not self.CP.pcmCruise:
       for b in buttonEvents:
         # The ECM allows enabling on falling edge of set, but only rising edge of resume
@@ -73,6 +82,7 @@ class CarState(CarStateBase):
     # Variables used for avoiding LKAS faults
     self.loopback_lka_steering_cmd_updated = len(loopback_cp.vl_all["ASCMLKASteeringCmd"]["RollingCounter"]) > 0
     if self.loopback_lka_steering_cmd_updated:
+      self.loopback_lka_steering_cmd_counter = loopback_cp.vl["ASCMLKASteeringCmd"]["RollingCounter"]
       self.loopback_lka_steering_cmd_ts_nanos = loopback_cp.ts_nanos["ASCMLKASteeringCmd"]["RollingCounter"]
     if self.CP.networkLocation == NetworkLocation.fwdCamera:
       self.pt_lka_steering_cmd_counter = pt_cp.vl["ASCMLKASteeringCmd"]["RollingCounter"]
@@ -175,6 +185,32 @@ class CarState(CarStateBase):
 
     if ret.vEgo < self.CP.minSteerSpeed:
       ret.lowSpeedAlert = True
+
+    if self.CP.flags & GMFlags.ASCM_C11:
+      now = self.ascm_now
+      main_ts = pt_cp.ts_nanos["ECMEngineStatus"]["CruiseMainOn"]
+      power_ts = pt_cp.ts_nanos["BCMGeneralPlatformStatus"]["SystemPowerMode"]
+      main_fresh = main_ts > 0 and 0 <= now - main_ts * 1e-9 < 0.250
+      power_fresh = power_ts > 0 and 0 <= now - power_ts * 1e-9 < 0.250
+      run = pt_cp.vl["BCMGeneralPlatformStatus"]["SystemPowerMode"] == 2
+      # Only observed vehicle frames establish reset edges; defaults and stale values do not.
+      if main_fresh:
+        if self.ascm_main is True and not ret.cruiseState.available:
+          self.ascm.invalidate("Cruise main switched off")
+        self.ascm_main = ret.cruiseState.available
+      if power_fresh:
+        if self.ascm_run is True and not run:
+          self.ascm.invalidate("Ignition left RUN")
+        self.ascm_run = run
+      allowed = (not self.CP.passive and main_fresh and power_fresh and run and ret.cruiseState.available and
+                 not (ret.brakePressed or ret.regenBraking or ret.gasPressed or ret.accFaulted))
+      self.ascm_button_enable = self.ascm.driver_request(now, ret.buttonEvents, allowed)
+      ret.ascmReady = allowed and self.ascm.permitted(now)
+      ret.ascmOemOwned = self.ascm.oem_owned
+      ret.ascmStatus = self.ascm.reason
+      for i, stream in enumerate(self.ascm.streams):
+        if stream.report is not None:
+          setattr(ret, "ascmMpu1" if i == 0 else "ascmMpu2", stream.report.raw)
 
     return ret
 

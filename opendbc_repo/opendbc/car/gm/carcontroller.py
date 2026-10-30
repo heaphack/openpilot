@@ -29,6 +29,7 @@ class CarController(CarControllerBase):
     self.reported_accel = 0.  # cached acceleration output for logging, m/s^2
     self.brake_accel_cmd = 0.  # the EBCM's signed request, m/s^2: negative braking, positive releasing held braking
     self.last_steer_frame = 0
+    self.last_steer_active = False
     self.last_button_frame = 0
     self.cancel_counter = 0
 
@@ -40,6 +41,10 @@ class CarController(CarControllerBase):
     # With an ASCM interceptor harness our commands enter on the ASCM's bus and the stock ASCM stays
     # alive, so we neither impersonate it to the radar and ADAS modules nor keep them alive ourselves.
     self.interceptor = bool(self.CP.flags & GMFlags.ASCM_INTERCEPTOR)
+    self.c11 = bool(self.CP.flags & GMFlags.ASCM_C11)
+    self.c11_engaged = False
+    self.c11_enabled_prev = False
+    self.c11_epoch = -1
     self.cmd_bus = CanBus.OBSTACLE if self.interceptor else CanBus.POWERTRAIN
 
     self.packer_pt = CANPacker(DBC[self.CP.carFingerprint][Bus.pt])
@@ -117,7 +122,7 @@ class CarController(CarControllerBase):
 
     # ACCActive needs to be 1 to avoid cruise faults. It describes the ACC state, not actuation
     powertrain_acc_active = CC.enabled
-    if self.CP.autoResumeSng:
+    if self.CP.autoResumeSng and not self.c11:
       # The ECM latches its ACC standstill state at a stop and holds it until the ACC request is
       # re-asserted. Once openpilot wants to move again (the near-stop hold released), drop
       # ACCActive for the frames the ECM still reports standstill: it clears the latch and the car
@@ -140,7 +145,7 @@ class CarController(CarControllerBase):
     self.reported_accel = brake_accel_cmd if self.long_owner == LongOwner.BRAKE else grade_compensated_accel
     return [
       gmcan.create_acc_powertrain_command(self.packer_pt, self.cmd_bus, axle_torque_cmd, idx, powertrain_acc_active, at_full_stop),
-      gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, brake_accel_cmd, idx, brake_mode),
+      gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, brake_accel_cmd, idx, brake_mode, c11=self.c11),
     ]
 
   def update_legacy_longitudinal(self, CC, CS, idx):
@@ -169,7 +174,7 @@ class CarController(CarControllerBase):
       friction_brake_bus = CanBus.POWERTRAIN
 
     powertrain_acc_active = CC.enabled
-    if self.CP.autoResumeSng:
+    if self.CP.autoResumeSng and not self.c11:
       # Preserve the existing resume behavior for a legacy configuration with auto-resume enabled.
       resume_from_stop = CC.longActive and CS.cruise_standstill and not CS.out.brakePressed
       at_full_stop = CC.longActive and CS.cruise_standstill and not resume_from_stop
@@ -182,10 +187,32 @@ class CarController(CarControllerBase):
     self.axle_torque_cmd, self.brake_accel_cmd, self.reported_accel = axle_torque_cmd, brake_accel_cmd, vehicle_accel_request
     return [
       gmcan.create_acc_powertrain_command(self.packer_pt, self.cmd_bus, axle_torque_cmd, idx, powertrain_acc_active, at_full_stop),
-      gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, brake_accel_cmd, idx, brake_mode),
+      gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, brake_accel_cmd, idx, brake_mode, c11=self.c11),
     ]
 
   def update(self, CC, CS, now_nanos):
+    if self.CP.passive:
+      return CC.actuators.as_builder(), []
+    if self.c11:
+      # Independent final gate, including freshness at send time. Recovery cannot reactivate
+      # a still-enabled controls process; it must first disengage and accept a new driver request.
+      ready = CS.ascm.permitted(now_nanos * 1e-9) and CS.out.ascmReady
+      enabled = CC.enabled and CC.longActive and not CC.cruiseControl.cancel
+      if not ready or not enabled or (self.c11_engaged and self.c11_epoch != CS.ascm.epoch):
+        self.c11_engaged = False
+      elif not self.c11_enabled_prev:
+        self.c11_engaged = True
+        self.c11_epoch = CS.ascm.epoch
+      self.c11_enabled_prev = enabled
+      CC = CC.as_builder()
+      if not self.c11_engaged:
+        CC.enabled = CC.latActive = CC.longActive = False
+      CS.ascm.command_active(self.c11_engaged, now_nanos * 1e-9)
+      if not CC.enabled:
+        CC.hudControl.setSpeed = 0
+        CC.hudControl.leadVisible = False
+        CC.hudControl.visualAlert = VisualAlert.none
+      CC = CC.as_reader()
     actuators = CC.actuators
     hud_control = CC.hudControl
     hud_alert = hud_control.visualAlert
@@ -199,7 +226,10 @@ class CarController(CarControllerBase):
     can_sends = []
 
     # Steering (Active: 50Hz, inactive: 10Hz)
-    steer_step = self.params.STEER_STEP if CC.latActive else self.params.INACTIVE_STEER_STEP
+    # Send the first release at active cadence; waiting 100 ms would trip c11's
+    # 60 ms active-input timeout during an ordinary disengagement.
+    active_cadence = CC.latActive or (self.c11 and self.last_steer_active)
+    steer_step = self.params.STEER_STEP if active_cadence else self.params.INACTIVE_STEER_STEP
 
     if self.CP.networkLocation == NetworkLocation.fwdCamera:
       # Also send at 50Hz:
@@ -210,14 +240,18 @@ class CarController(CarControllerBase):
       if CS.loopback_lka_steering_cmd_ts_nanos == 0 or out_of_sync:
         steer_step = self.params.STEER_STEP
 
-    self.lka_steering_cmd_counter += 1 if CS.loopback_lka_steering_cmd_updated else 0
+    if self.c11:
+      if CS.loopback_lka_steering_cmd_updated:
+        self.lka_steering_cmd_counter = (CS.loopback_lka_steering_cmd_counter + 1) % 4
+    else:
+      self.lka_steering_cmd_counter += 1 if CS.loopback_lka_steering_cmd_updated else 0
 
     # Avoid GM EPS faults when transmitting messages too close together: skip this transmit if we
     # received the ASCMLKASteeringCmd loopback confirmation too recently
     last_lka_steer_msg_ms = (now_nanos - CS.loopback_lka_steering_cmd_ts_nanos) * 1e-6
     if (self.frame - self.last_steer_frame) >= steer_step and last_lka_steer_msg_ms > MIN_STEER_MSG_INTERVAL_MS:
       # Initialize ASCMLKASteeringCmd counter using the camera until we get a msg on the bus
-      if CS.loopback_lka_steering_cmd_ts_nanos == 0:
+      if CS.loopback_lka_steering_cmd_ts_nanos == 0 and not self.c11:
         self.lka_steering_cmd_counter = CS.pt_lka_steering_cmd_counter + 1
 
       if CC.latActive:
@@ -228,6 +262,7 @@ class CarController(CarControllerBase):
         steer_torque_cmd = 0
 
       self.last_steer_frame = self.frame
+      self.last_steer_active = CC.latActive
       self.last_steer_torque_cmd = steer_torque_cmd
       idx = self.lka_steering_cmd_counter % 4
       can_sends.append(gmcan.create_steering_command(self.packer_pt, self.cmd_bus, steer_torque_cmd, idx, CC.latActive))

@@ -205,6 +205,13 @@ struct CarState {
   blockPcmEnable @60 :Bool;  # whether to allow PCM to enable this frame
   carNotReady @61 :Bool;  # car is transiently refusing engagement, used to prevent a fault if engaged
 
+  # Explicit c11 ASCM authorization and last local diagnostic reports.
+  ascmReady @62 :Bool;
+  ascmOemOwned @63 :Bool;
+  ascmStatus @64 :Text;
+  ascmMpu1 @65 :Data;
+  ascmMpu2 @66 :Data;
+
   # cruise state
   cruiseState @10 :CruiseState;
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import os
+import time
 from math import fabs, exp, sqrt, copysign, radians
 import numpy as np
 
@@ -24,8 +26,8 @@ NetworkLocation = structs.CarParams.NetworkLocation
 # steady-state, 5-60 deg samples gives 1.7 (90 % interval 1.6-2.0, 6 s of data) at 4.5-5.5 m/s and 2.5
 # (1.9-3.8, 5 s across 28 segments) at 3.0-4.0 m/s. The 3.5 m/s breakpoint sits at the low end of that
 # interval so the feedforward does not over-supply at parking speeds; steering is active from 3.13 m/s.
-VOLT_FF_L_EFF = 10.07          # alpha 1/v**2 coefficient (fitted; not wheelbase x steer ratio, it also folds in
-                               # the torque-to-lateral-acceleration factor, hand-wheel rad per Nm)
+# Fitted alpha 1/v**2 coefficient; includes torque-to-lateral-acceleration factor, hand-wheel rad per Nm.
+VOLT_FF_L_EFF = 10.07
 VOLT_FF_UNDERSTEER = 0.01266   # alpha constant term
 VOLT_FF_CUBIC_1 = 3.616        # beta 1/v**2 coefficient
 VOLT_FF_CUBIC_0 = 0.00106      # beta constant term
@@ -48,6 +50,21 @@ class CarInterface(CarInterfaceBase):
 
   DRIVABLE_GEARS = (structs.CarState.GearShifter.sport, structs.CarState.GearShifter.low,
                     structs.CarState.GearShifter.eco, structs.CarState.GearShifter.manumatic)
+
+  def update(self, can_packets):
+    if self.CP.flags & GMFlags.ASCM_C11:
+      now = time.monotonic()
+      if "REPLAY" in os.environ:
+        now = can_packets[-1][0] * 1e-9 if can_packets else self.CS.ascm_now + 0.01
+      self.CS.ascm_now = now
+      for timestamp, frames in can_packets:
+        for address, data, bus in frames:
+          self.CS.ascm.receive(address, data, bus, timestamp * 1e-9)
+    ret = super().update(can_packets)
+    if self.CP.flags & GMFlags.ASCM_C11 and not ret.canValid:
+      self.CS.ascm.invalidate("Vehicle CAN invalid")
+      ret.ascmReady = ret.buttonEnable = False
+    return ret
 
   @staticmethod
   def get_pid_accel_limits(CP, current_speed, cruise_speed):
@@ -117,6 +134,9 @@ class CarInterface(CarInterfaceBase):
     ret.brand = "gm"
     ret.safetyConfigs = [get_safety_config(structs.CarParams.SafetyModel.gm)]
     ret.autoResumeSng = False
+    if ret.flags & GMFlags.ASCM_C11:
+      assert ret.flags & GMFlags.ASCM_INTERCEPTOR
+      ret.safetyConfigs[0].safetyParam |= GMSafetyFlags.ASCM_C11.value
     if 0x142 in fingerprint[CanBus.POWERTRAIN]:
       ret.flags |= GMFlags.HAS_BSM.value
 
@@ -185,8 +205,8 @@ class CarInterface(CarInterfaceBase):
     ret.longitudinalActuatorDelay = 0.5  # large delay to initially start braking
 
     if candidate == CAR.CHEVROLET_VOLT:
-      # openpilot resumes from an ACC standstill on its own (see CarController), so no resume-required alert
-      ret.autoResumeSng = ret.openpilotLongitudinalControl
+      # c11 requires physical resume: the legacy ACCActive pulse clears its engagement latch.
+      ret.autoResumeSng = ret.openpilotLongitudinalControl and not (ret.flags & GMFlags.ASCM_C11)
 
       # Integral gain for the two-owner allocation (GMFlags.ASCM_LONG): the feedforward carries most of the
       # request, so ki is low and rises with speed. The 2.4/1.5 schedule above was tuned for the lookups.

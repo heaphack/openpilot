@@ -1,0 +1,322 @@
+{
+  "valid": [
+    {
+      "identifier": 893,
+      "payload": "2000001100000001",
+      "expected": {
+        "cpu": 1,
+        "version": 2,
+        "owner": "unselected",
+        "sequence": 0,
+        "modes": {
+          "steering": 0,
+          "longitudinal": 0
+        },
+        "reasons": {
+          "steering": 1,
+          "longitudinal": 1
+        },
+        "completed": {
+          "steering": 0,
+          "gas": 0,
+          "acc_status": 0
+        },
+        "available": false,
+        "active": false,
+        "generation_low8": 1
+      },
+      "network": "object"
+    },
+    {
+      "identifier": 893,
+      "payload": "2407110004050601",
+      "expected": {
+        "cpu": 1,
+        "version": 2,
+        "owner": "unselected",
+        "sequence": 7,
+        "modes": {
+          "steering": 1,
+          "longitudinal": 1
+        },
+        "reasons": {
+          "steering": 0,
+          "longitudinal": 0
+        },
+        "completed": {
+          "steering": 4,
+          "gas": 5,
+          "acc_status": 6
+        },
+        "available": true,
+        "active": false,
+        "generation_low8": 1
+      },
+      "network": "object"
+    },
+    {
+      "identifier": 893,
+      "payload": "2e08110005060701",
+      "expected": {
+        "cpu": 1,
+        "version": 2,
+        "owner": "openpilot",
+        "sequence": 8,
+        "modes": {
+          "steering": 1,
+          "longitudinal": 1
+        },
+        "reasons": {
+          "steering": 0,
+          "longitudinal": 0
+        },
+        "completed": {
+          "steering": 5,
+          "gas": 6,
+          "acc_status": 7
+        },
+        "available": true,
+        "active": true,
+        "generation_low8": 1
+      },
+      "network": "object"
+    },
+    {
+      "identifier": 893,
+      "payload": "2209120106070801",
+      "expected": {
+        "cpu": 1,
+        "version": 2,
+        "owner": "openpilot",
+        "sequence": 9,
+        "modes": {
+          "steering": 1,
+          "longitudinal": 2
+        },
+        "reasons": {
+          "steering": 0,
+          "longitudinal": 1
+        },
+        "completed": {
+          "steering": 6,
+          "gas": 7,
+          "acc_status": 8
+        },
+        "available": false,
+        "active": false,
+        "generation_low8": 1
+      },
+      "network": "object"
+    },
+    {
+      "identifier": 893,
+      "payload": "210a110007080901",
+      "expected": {
+        "cpu": 1,
+        "version": 2,
+        "owner": "oem",
+        "sequence": 10,
+        "modes": {
+          "steering": 1,
+          "longitudinal": 1
+        },
+        "reasons": {
+          "steering": 0,
+          "longitudinal": 0
+        },
+        "completed": {
+          "steering": 7,
+          "gas": 8,
+          "acc_status": 9
+        },
+        "available": false,
+        "active": false,
+        "generation_low8": 1
+      },
+      "network": "object"
+    },
+    {
+      "identifier": 892,
+      "payload": "260bf1f009000001",
+      "expected": {
+        "cpu": 2,
+        "version": 2,
+        "owner": "openpilot",
+        "sequence": 11,
+        "modes": {
+          "unused": 15,
+          "brake": 1
+        },
+        "reasons": {
+          "unused": 15,
+          "brake": 0
+        },
+        "completed": {
+          "brake": 9
+        },
+        "available": true,
+        "active": false,
+        "generation_low8": 1
+      },
+      "network": "chassis"
+    },
+    {
+      "identifier": 892,
+      "payload": "220cf2f20a000001",
+      "expected": {
+        "cpu": 2,
+        "version": 2,
+        "owner": "openpilot",
+        "sequence": 12,
+        "modes": {
+          "unused": 15,
+          "brake": 2
+        },
+        "reasons": {
+          "unused": 15,
+          "brake": 2
+        },
+        "completed": {
+          "brake": 10
+        },
+        "available": false,
+        "active": false,
+        "generation_low8": 1
+      },
+      "network": "chassis"
+    },
+    {
+      "identifier": 892,
+      "payload": "200df0f10b000002",
+      "expected": {
+        "cpu": 2,
+        "version": 2,
+        "owner": "unselected",
+        "sequence": 13,
+        "modes": {
+          "unused": 15,
+          "brake": 0
+        },
+        "reasons": {
+          "unused": 15,
+          "brake": 1
+        },
+        "completed": {
+          "brake": 11
+        },
+        "available": false,
+        "active": false,
+        "generation_low8": 2
+      },
+      "network": "chassis"
+    }
+  ],
+  "invalid": [
+    {
+      "identifier": 893,
+      "payload": "1100110001020301",
+      "network": "object"
+    },
+    {
+      "identifier": 893,
+      "payload": "3000110001020301",
+      "network": "object"
+    },
+    {
+      "identifier": 893,
+      "payload": "2300110001020301",
+      "network": "object"
+    },
+    {
+      "identifier": 893,
+      "payload": "2800110001020301",
+      "network": "object"
+    },
+    {
+      "identifier": 893,
+      "payload": "2500110001020301",
+      "network": "object"
+    },
+    {
+      "identifier": 893,
+      "payload": "2200310001020301",
+      "network": "object"
+    },
+    {
+      "identifier": 893,
+      "payload": "2200115001020301",
+      "network": "object"
+    },
+    {
+      "identifier": 892,
+      "payload": "2200110001000001",
+      "network": "chassis"
+    },
+    {
+      "identifier": 892,
+      "payload": "2200f1f001010001",
+      "network": "chassis"
+    },
+    {
+      "identifier": 892,
+      "payload": "2200f1f501000001",
+      "network": "chassis"
+    },
+    {
+      "identifier": 892,
+      "payload": "2200f1f0010000",
+      "network": "chassis"
+    }
+  ],
+  "transport_invalid": [
+    {
+      "network": "object",
+      "identifier": 892,
+      "payload": "260bf1f009000001",
+      "extended": false,
+      "remote": false
+    },
+    {
+      "network": "pt",
+      "identifier": 892,
+      "payload": "260bf1f009000001",
+      "extended": false,
+      "remote": false
+    },
+    {
+      "network": "chassis",
+      "identifier": 894,
+      "payload": "260bf1f009000001",
+      "extended": false,
+      "remote": false
+    },
+    {
+      "network": "object",
+      "identifier": 894,
+      "payload": "260bf1f009000001",
+      "extended": false,
+      "remote": false
+    },
+    {
+      "network": "chassis",
+      "identifier": 892,
+      "payload": "260bf1f009000001",
+      "extended": true,
+      "remote": false
+    },
+    {
+      "network": "chassis",
+      "identifier": 892,
+      "payload": "260bf1f009000001",
+      "extended": false,
+      "remote": true
+    },
+    {
+      "network": "chassis",
+      "identifier": 893,
+      "payload": "260bf1f009000001",
+      "extended": false,
+      "remote": false
+    }
+  ]
+}

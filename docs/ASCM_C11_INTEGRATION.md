@@ -138,3 +138,15 @@ If carControl stops publishing after initialization, card continues c11 input
 streams using an empty/inactive CarControl. This cannot cover termination of card
 or Panda itself; those failures rely on ASCM input timeout and require end-to-end
 fault-injection validation.
+
+### Rebuilt Panda artifacts
+
+Source revision: `bcb8a8803`; version marker: `DEV-bcb8a880-DEBUG`.
+SHA256 of the tracked outputs:
+
+```text
+f6205b789633a8637158dc8936b7cd8776209ea4863acb0d2d4a669246b0f437  bootstub.panda_h7.bin
+eb4140d2bf3b41a7a7f96d74aa59b69f19854cb280c1c368cea1e0d6b8fbb25d  bootstub.body_h7.bin
+2b9aa20b622142fe888bda7ec4c3a02e252c110746895b978826e3e536920588  panda_h7.bin.signed
+063b9c0dc382d09077c697c699057502b0349e7a19701156f0d30c3abddfb2b1  body_h7.bin.signed
+```

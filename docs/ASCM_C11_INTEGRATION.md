@@ -23,8 +23,8 @@ The four permitted Panda transmissions are object 0x180/DLC4, 0x2CB/DLC8,
 The ASCM transmits to the actuator networks. c11 permits no direct PT/chassis
 commands or replacement-ASCM ADAS keepalives. Steering advances from the last
 observed own object-bus TX loopback (bus 129), starting at counter 0 and retrying
-that counter until a loopback arrives. Received PT commands cannot seed it. Gas and brake likewise use independent
-successful object-bus TX echoes; rejected attempts (bus 193) never advance
+that counter until a loopback arrives. Received PT commands cannot seed it. Gas
+and brake likewise use independent successful object-bus TX echoes; rejected attempts (bus 193) never advance
 their counters. The next attempt uses current command values, so a rejection
 followed by disengagement produces an inactive/release packet at the missing
 counter rather than retrying an old active request.
@@ -251,7 +251,21 @@ Validation of this update:
 
 Offline comparison/replay scripts and results are in
 `~/volt_logs/ascm_pedal_overrides_2026-10-31/minimum_fix_validation/`.
-Panda artifacts must be rebuilt for this update; no ASCM firmware change is
-included. No deployment, flashing or vehicle validation has been performed.
+Both H7 applications and debug bootstubs were rebuilt for this update; no ASCM
+firmware change is included. No deployment, flashing or vehicle validation has been performed.
 Automatic standstill resume remains disabled for c11 because the baseline pulse
 cancels its engagement latch; this update restores pedal override, not that pulse.
+
+### Panda artifacts for the minimum integration
+
+Source commit: `3cc5a68dce65e32f72cc38f2597d47455cecc005`.
+Version: `DEV-3cc5a68d-DEBUG`. Both application debug signatures and embedded
+versions were verified against the debug public key and source revision.
+Build completed with warnings treated as errors; no device was flashed.
+
+```text
+1651af170344703b67a91496be227d7cf3110ee36a9e104fa2da68076b3310b7  panda_h7.bin.signed
+1298ca435d7fcd2ed3ec9a3b595dff6ab6bdf1692a2e6d400f242789903fc440  body_h7.bin.signed
+96bbb72e326da109bd26f86435ea16cf1e425fac3cc463fdc7f77da6a36cc157  bootstub.panda_h7.bin
+b18cf11c08357075bbce13e36b72ad9c4051848b85d21780dc000906814396dc  bootstub.body_h7.bin
+```

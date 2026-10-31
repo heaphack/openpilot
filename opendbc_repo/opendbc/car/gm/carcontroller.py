@@ -65,7 +65,7 @@ class CarController(CarControllerBase):
     if len(CC.orientationNED) == 3:
       self.pitch_filter.update(CC.orientationNED[1])
 
-  def update_ascm_longitudinal(self, CC, CS, idx):
+  def update_ascm_longitudinal(self, CC, CS, idx, brake_idx=None):
     """Build the ACC powertrain and brake commands using the ASCM-inspired allocation, at 25 Hz."""
     p = self.params
     v = CS.out.vEgo
@@ -145,10 +145,11 @@ class CarController(CarControllerBase):
     self.reported_accel = brake_accel_cmd if self.long_owner == LongOwner.BRAKE else grade_compensated_accel
     return [
       gmcan.create_acc_powertrain_command(self.packer_pt, self.cmd_bus, axle_torque_cmd, idx, powertrain_acc_active, at_full_stop),
-      gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, brake_accel_cmd, idx, brake_mode, c11=self.c11),
+      gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, brake_accel_cmd,
+                                        idx if brake_idx is None else brake_idx, brake_mode, c11=self.c11),
     ]
 
-  def update_legacy_longitudinal(self, CC, CS, idx):
+  def update_legacy_longitudinal(self, CC, CS, idx, brake_idx=None):
     """Build the ACC powertrain and brake commands using the existing lookup tables, at 25 Hz."""
     p = self.params
     vehicle_accel_request = CC.actuators.accel
@@ -187,7 +188,8 @@ class CarController(CarControllerBase):
     self.axle_torque_cmd, self.brake_accel_cmd, self.reported_accel = axle_torque_cmd, brake_accel_cmd, vehicle_accel_request
     return [
       gmcan.create_acc_powertrain_command(self.packer_pt, self.cmd_bus, axle_torque_cmd, idx, powertrain_acc_active, at_full_stop),
-      gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, brake_accel_cmd, idx, brake_mode, c11=self.c11),
+      gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, brake_accel_cmd,
+                                        idx if brake_idx is None else brake_idx, brake_mode, c11=self.c11),
     ]
 
   def update(self, CC, CS, now_nanos):
@@ -199,9 +201,10 @@ class CarController(CarControllerBase):
       ready = CS.ascm.permitted(now_nanos * 1e-9) and CS.out.ascmReady
       # cruiseControl.cancel is a stock-PCM request, not a driver/session disable.
       # With pcmCruise=False controlsd asserts it when our ASCM enables ECU cruise.
-      # Only the actual session's enabled edge can rearm after withdrawing active
-      # commands; neither clearing stock cancel nor ending a long override can.
-      if not ready or not CC.enabled or not CC.longActive or (self.c11_engaged and self.c11_epoch != CS.ascm.epoch):
+      # Gas override pauses longitudinal actuation while retaining the session.
+      # Only an actual enabled edge can rearm after a disable or ASCM fault.
+      pedal_cancel = CS.out.brakePressed or CS.out.regenBraking
+      if not ready or not CC.enabled or pedal_cancel or CS.out.accFaulted or (self.c11_engaged and self.c11_epoch != CS.ascm.epoch):
         self.c11_engaged = False
       elif not self.c11_enabled_prev:
         self.c11_engaged = True
@@ -210,6 +213,10 @@ class CarController(CarControllerBase):
       CC = CC.as_builder()
       if not self.c11_engaged:
         CC.enabled = CC.latActive = CC.longActive = False
+      elif CS.out.gasPressed:
+        # Apply the override even before controlsd sees the new pedal sample.
+        # The allocators retain ACCActive but send inactive torque and release.
+        CC.longActive = False
       CS.ascm.command_active(self.c11_engaged, now_nanos * 1e-9)
       if not CC.enabled:
         CC.hudControl.setSpeed = 0
@@ -274,10 +281,14 @@ class CarController(CarControllerBase):
       # Powertrain, brakes, and UI commands - all at 25Hz
       if self.frame % 4 == 0:
         idx = (self.frame // 4) % 4
+        brake_idx = idx
+        if self.c11:
+          idx = CS.ascm_next_counters[0x2CB]
+          brake_idx = CS.ascm_next_counters[0x37F]
         if self.params.ASCM_LONG:
-          can_sends.extend(self.update_ascm_longitudinal(CC, CS, idx))
+          can_sends.extend(self.update_ascm_longitudinal(CC, CS, idx, brake_idx))
         else:
-          can_sends.extend(self.update_legacy_longitudinal(CC, CS, idx))
+          can_sends.extend(self.update_legacy_longitudinal(CC, CS, idx, brake_idx))
 
         # Send dashboard UI commands (ACC status)
         send_fcw = hud_alert == VisualAlert.fcw

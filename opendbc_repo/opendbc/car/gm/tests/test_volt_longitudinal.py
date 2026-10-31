@@ -20,7 +20,7 @@ def make_state(speed=0.5, minimum=100., valid=True, standstill=False, cruise_sta
   out = structs.CarState.new_message(vEgo=speed, standstill=standstill)
   return SimpleNamespace(out=out, cruise_standstill=cruise_standstill, axle_torque_min=minimum, axle_torque_min_valid=valid,
                          lka_steering_cmd_counter=0, pt_lka_steering_cmd_counter=0, loopback_lka_steering_cmd_updated=False,
-                         loopback_lka_steering_cmd_ts_nanos=0)
+                         loopback_lka_steering_cmd_ts_nanos=0, ascm_next_counters={0x2CB: 0, 0x37F: 0})
 
 
 def make_control(pitch=None):

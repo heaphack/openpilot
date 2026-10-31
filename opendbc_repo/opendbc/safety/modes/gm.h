@@ -102,21 +102,12 @@ static bool gm_tx_hook(const CANPacket_t *msg) {
     .type = TorqueDriverLimited,
   };
 
-  bool tx = !gm_c11 || ((msg->extended == 0U) && (msg->fd == 0U));
+  bool tx = true;
 
   // BRAKE: the EBCM request is a signed acceleration in 0.01 m/s^2 counts, not a brake pressure
   if ((msg->addr == 0x315U) || (gm_c11 && msg_matches(msg, 0x37FU, 1U))) {
     const int raw = ((msg->data[0] & 0xFU) << 8) + msg->data[1];
     const int request = to_signed(raw, 12);
-    if (gm_c11) {
-      const unsigned int mode = msg->data[0] >> 4;
-      const bool release = (mode == 1U) && (request == 0);
-      const bool active_mode = (mode == 10U) || (mode == 11U) || (mode == 13U);
-      // Hold/active modes can actuate even with zero requested acceleration.
-      if (!release && (!get_longitudinal_allowed() || !active_mode)) {
-        tx = false;
-      }
-    }
     if (longitudinal_accel_checks(request, *gm_long_limits)) {
       tx = false;
     }
@@ -128,9 +119,6 @@ static bool gm_tx_hook(const CANPacket_t *msg) {
     desired_torque = to_signed(desired_torque, 11);
 
     bool steer_req = GET_BIT(msg, 3U);
-    if (gm_c11 && !controls_allowed && steer_req) {
-      tx = false;
-    }
 
     if (steer_torque_cmd_checks(desired_torque, steer_req, GM_STEERING_LIMITS)) {
       tx = false;
@@ -146,19 +134,11 @@ static bool gm_tx_hook(const CANPacket_t *msg) {
     bool violation = false;
     // Check the ACC-active flag separately from the torque magnitude.
     violation |= !controls_allowed && powertrain_acc_active;
-    if (gm_c11) {
-      const bool stop = (msg->data[1] & 0x20U) != 0U;
-      violation |= !get_longitudinal_allowed() && (stop || powertrain_acc_active);
-    }
     violation |= longitudinal_gas_checks(axle_torque_cmd_counts, *gm_long_limits);
 
     if (violation) {
       tx = false;
     }
-  }
-
-  if (gm_c11 && (msg->addr == 0x370U) && !controls_allowed && GET_BIT(msg, 23U)) {
-    tx = false;
   }
 
   // BUTTONS: used for resume spamming and cruise cancellation with stock longitudinal

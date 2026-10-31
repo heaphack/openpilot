@@ -60,6 +60,14 @@ class CarInterface(CarInterfaceBase):
       for timestamp, frames in can_packets:
         for address, data, bus in frames:
           self.CS.ascm.receive(address, data, bus, timestamp * 1e-9)
+          # Only successful object-bus TX echoes advance each sender's counter.
+          # A safety rejection (bus 193), or an ASCM output on PT/chassis, must
+          # not make the next inactive/release packet skip an unsent counter.
+          if bus == CanBus.LOOPBACK + CanBus.OBSTACLE:
+            if address == 0x2CB and len(data) == 8:
+              self.CS.ascm_next_counters[address] = ((data[0] >> 6) + 1) % 4
+            elif address == 0x37F and len(data) == 5:
+              self.CS.ascm_next_counters[address] = ((data[4] & 3) + 1) % 4
     ret = super().update(can_packets)
     if self.CP.flags & GMFlags.ASCM_C11 and not ret.canValid:
       self.CS.ascm.invalidate("Vehicle CAN invalid")

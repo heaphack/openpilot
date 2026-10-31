@@ -23,7 +23,11 @@ The four permitted Panda transmissions are object 0x180/DLC4, 0x2CB/DLC8,
 The ASCM transmits to the actuator networks. c11 permits no direct PT/chassis
 commands or replacement-ASCM ADAS keepalives. Steering advances from the last
 observed own object-bus TX loopback (bus 129), starting at counter 0 and retrying
-that counter until a loopback arrives. Received PT commands cannot seed it.
+that counter until a loopback arrives. Received PT commands cannot seed it. Gas and brake likewise use independent
+successful object-bus TX echoes; rejected attempts (bus 193) never advance
+their counters. The next attempt uses current command values, so a rejection
+followed by disengagement produces an inactive/release packet at the missing
+counter rather than retrying an old active request.
 
 Inactive/release commands continue during startup, OEM ownership, disengagement,
 and faults. Passive/dashcam mode sends none. Inactive UI is `010000000100`, gas
@@ -37,9 +41,11 @@ avoid triggering the firmware's 60 ms active-input timeout on disengagement.
 `opendbc/car/gm/ascm.py` directly decodes exact-length raw frames, binding MPU1
 0x37D to object and MPU2 0x37C to chassis. Raw parsing deliberately avoids CANParser
 freshness semantics that would refresh on duplicate sequences. Legacy 0x37E,
-wrong buses, and invalid payload schemas cannot establish readiness. Panda H7's
-receive path rejects extended, remote, and CAN-FD variants of these IDs in c11
-mode before the flags are lost in host serialization.
+wrong buses, and invalid payload schemas cannot establish readiness. As explicitly
+chosen by the user, live framing follows the existing GM Global A assumption:
+standard Classical CAN data frames. There is no c11-specific Panda receive filter.
+The host interface does not expose framing flags, so it cannot independently
+verify this assumption; optional offline decoder flag checks are not live checks.
 
 Three advancing reports per processor establish qualification. All four completion
 counters must independently advance; the first report is only a baseline.
@@ -66,7 +72,14 @@ both lateral and longitudinal requests, including release during braking/standst
 Recovery while controls remains enabled cannot reactivate commands. After active
 entry, both processors must report active forwarding within 160 ms; that bit is
 not required before sending the first active command. Alerts immediately disable
-the openpilot state machine on lost authorization.
+the openpilot state machine on lost authorization. Pedals are not classified as
+ASCM faults: brake/regen retain normal driver disengagement; gas temporarily
+overrides longitudinal actuation while session ACCActive, UI-active and eligible
+steering remain enabled. Gas immediately selects inactive axle torque, clears
+stop/hold requests and releases braking, even before controlsd processes the
+pedal sample. Release resumes longitudinal control only within that same healthy
+session. A real fault during override still disables both axes and requires a
+new engagement. Pedals continue to inhibit new pending SET/RESUME requests.
 
 c11 disables the legacy automatic-resume ACCActive pulse: it clears the firmware's
 engagement latch. ACC standstill is reported to the normal resume-required path;
@@ -160,10 +173,11 @@ stock-PCM request as a c11 disengagement interrupted ACCActive and cleared the
 ASCM engagement latch. Clearing the flag then incorrectly rearmed the sender.
 
 The c11 sender now ignores the stock-PCM cancel flag for session authorization.
-Physical CANCEL still disables the openpilot state machine, and pedal, readiness,
-epoch, and longitudinal-disable gates still release both axes. The rearm edge
-tracks actual `CarControl.enabled`, so neither clearing stock cancel nor ending
-a longitudinal override can rearm an interrupted session while enabled stays true.
+Physical CANCEL still disables the openpilot state machine. Readiness/epoch faults
+and real disengagement release both axes. The rearm edge tracks actual
+`CarControl.enabled`, so clearing stock cancel cannot rearm an interrupted
+session while enabled stays true. The initial fix also treated longitudinal
+override as a session disable; the minimum-integration update below corrects that.
 The active-confirmation watchdog and all safety limits/deadlines are unchanged.
 
 A SET/RESUME press can now establish bounded pending intent while healthy peers
@@ -192,6 +206,52 @@ Validation:
   These probes use recorded status/timing, not a closed-loop physical replay.
   Results are saved under `~/volt_logs/ascm_unavailable_2026-10-31/fix_validation/`.
 
-Only host Python and tests changed. The existing Panda artifacts remain applicable;
-no ASCM or Panda firmware rebuild/change is needed for these fixes. No deployment,
+For that earlier stock-cancel/first-SET fix, only host Python and tests changed;
+its existing Panda artifacts remained applicable. The later minimum-integration
+update below does require rebuilt Panda firmware. No deployment,
 flashing, live CAN transmission, or vehicle test was performed.
+
+
+## Minimum integration and pedal compatibility — 2026-10-31
+
+Relative to `nightly-chestnut-10-19-26`, Panda firmware source changes are now
+limited to `opendbc/safety/modes/gm.h`: a c11 configuration flag, its four-command
+object-bus TX allowlist, and applying the existing brake numeric safety checks to
+object `0x37F`. The CAN driver is identical to nightly. The additional c11 checks
+on active/hold/UI flags and command framing have been removed as requested.
+Baseline GM pedal detection, controls permission, numerical actuation limits,
+and steering rate/driver-torque checks are unchanged. `ACCActive` is still
+forbidden after actual disengagement but is allowed with inactive torque during
+a gas override while the session remains enabled.
+
+Host changes retain the OEM checksum correction, both status supervisors,
+ownership handshake, inactive streams and genuine-fault release/rearm rules.
+Driver override is separated from ASCM health, and gas/brake counters follow
+independent successful transmissions. This addresses both the misleading alerts
+and the subsequent counter discontinuities seen in the two follow-up drives.
+
+Validation of this update:
+
+- GM car, all car interfaces, GM Panda safety and diagnostic safety:
+  **615 passed, 145 skipped, 573 passing subtests**.
+- Application event/publish/controller paths: **10 passed, 2 passing subtests**,
+  including gas override/resume, releasing standstill hold, normal brake/regen
+  disengagement and a genuine ASCM fault during gas override. The same host IPC
+  extension and unused process-import substitutions described above were used.
+- **608 compiled TX safety decisions match the nightly baseline** with the brake
+  ID mapped from `0x315` to `0x37F`. Coverage includes enabled/disabled and gas
+  states, request limits, brake modes, steering-active and UI-active fields.
+  This is behavioral parity evidence, not new physical validation of every mode.
+- The two recorded rejection incidents yield consecutive release counters for
+  all three affected streams: drive cb gas `3 -> 0`; drive cc gas and brake
+  `1 -> 2`. The old release counters were `1` and `3`, respectively. Generated
+  inactive/release payload checksums validate. This is a replay of TX-return
+  inputs through the host counter path, not a closed-loop vehicle simulation.
+- Ruff and `git diff --check` pass.
+
+Offline comparison/replay scripts and results are in
+`~/volt_logs/ascm_pedal_overrides_2026-10-31/minimum_fix_validation/`.
+Panda artifacts must be rebuilt for this update; no ASCM firmware change is
+included. No deployment, flashing or vehicle validation has been performed.
+Automatic standstill resume remains disabled for c11 because the baseline pulse
+cancels its engagement latch; this update restores pedal override, not that pulse.

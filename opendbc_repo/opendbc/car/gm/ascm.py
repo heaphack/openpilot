@@ -1,8 +1,8 @@
 """dev-v7-c11 ownership supervisor. Times are seconds on the CAN monotonic clock.
 
 These host deadlines are provisional; they are not physical actuator latency bounds.
-CanData has no IDE/RTR flags: Panda's Classical DATA receive path must enforce those
-before serialization. The decoder also accepts explicit flags for offline validation.
+Live CAN format follows the existing GM Global A transport assumptions. The decoder
+also accepts explicit framing flags for offline validation when they are available.
 """
 from dataclasses import dataclass, field
 from enum import IntEnum

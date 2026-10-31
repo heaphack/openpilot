@@ -38,6 +38,7 @@ class CarState(CarStateBase):
     self.ascm_main = None
     self.ascm_run = None
     self.loopback_lka_steering_cmd_counter = 0
+    self.ascm_next_counters = {0x2CB: 0, 0x37F: 0}
 
     # powertrain axle torque limits (0x1C5), GMFlags.ASCM_LONG only
     self.axle_torque = 0.
@@ -202,10 +203,12 @@ class CarState(CarStateBase):
         if self.ascm_run is True and not run:
           self.ascm.invalidate("Ignition left RUN")
         self.ascm_run = run
-      allowed = (not self.CP.passive and main_fresh and power_fresh and run and ret.cruiseState.available and
-                 not (ret.brakePressed or ret.regenBraking or ret.gasPressed or ret.accFaulted))
+      ready = not self.CP.passive and main_fresh and power_fresh and run and ret.cruiseState.available
+      # Pedals inhibit a NEW engagement, not the ASCM's health. Normal pedal
+      # events retain their existing disable/override semantics in selfdrived.
+      allowed = ready and not (ret.brakePressed or ret.regenBraking or ret.gasPressed or ret.accFaulted)
       self.ascm_button_enable = self.ascm.driver_request(now, ret.buttonEvents, allowed)
-      ret.ascmReady = allowed and self.ascm.permitted(now)
+      ret.ascmReady = ready and self.ascm.permitted(now)
       ret.ascmOemOwned = self.ascm.oem_owned
       ret.ascmStatus = self.ascm.reason
       for i, stream in enumerate(self.ascm.streams):

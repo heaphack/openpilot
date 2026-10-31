@@ -220,8 +220,10 @@ class TestC11Commands(unittest.TestCase):
           state.loopback_lka_steering_cmd_updated = True
         elif m[0] == 0x2CB:
           self.assertEqual(bytes([m[1][0] & 0x3F]) + m[1][1:4], bytes.fromhex('0042abe0'))
+          state.ascm_next_counters[0x2CB] = ((m[1][0] >> 6) + 1) % 4
         elif m[0] == 0x37F:
           self.assertEqual(m[1][:2], bytes.fromhex('1000'))
+          state.ascm_next_counters[0x37F] = ((m[1][4] & 3) + 1) % 4
           self.assertEqual((int.from_bytes(m[1][:2], 'big') + int.from_bytes(m[1][2:4], 'big') + (m[1][4] & 3)) & 0xFFFF, 0)
         elif m[0] == 0x370:
           self.assertEqual(m[1].hex(), '010000000100')
@@ -252,6 +254,75 @@ class TestC11Commands(unittest.TestCase):
 
 
 class TestC11Integration(unittest.TestCase):
+  def test_pedal_input_does_not_change_ascm_health(self):
+    from unittest.mock import patch
+    from opendbc.car import Bus, gen_empty_fingerprint
+    from opendbc.car.gm.interface import CarInterface
+
+    fields = {'ECMEngineStatus': {'CruiseMainOn': True}, 'BCMGeneralPlatformStatus': {'SystemPowerMode': 2},
+              'ASCMSteeringButton': {'ACCButtons': 1}, 'HPCMAxleTorqueLimits': {'AxleTorqueMin': -650}}
+    for message, signal in (('AcceleratorPedal2', 'AcceleratorPedal2'), ('ECMAcceleratorPos', 'BrakePedalPos'),
+                            ('EBCMRegenPaddle', 'RegenPaddle')):
+      with self.subTest(pedal=signal):
+        cp = CarInterface.get_params(CAR.CHEVROLET_VOLT, gen_empty_fingerprint(), [], False, False, False)
+        ci = CarInterface(cp)
+        packer = CANPacker('gm_global_a_powertrain_generated')
+        with patch('opendbc.car.gm.interface.time.monotonic', return_value=1.):
+          ci.update([])
+        for seq in range(8):
+          now = (1_000_000_000 + seq * 40_000_000) * 1e-9
+          values = {name: dict(v) for name, v in fields.items()}
+          if seq == 6:
+            values[message] = {signal: 8 if signal == 'BrakePedalPos' else 1}
+            values['ASCMSteeringButton']['ACCButtons'] = 2  # Do not grant a new RESUME with a pedal held.
+          messages = [packer.make_can_msg(s.name, 0, values.get(s.name, {})) for s in ci.can_parsers[Bus.pt].message_states.values()]
+          messages += [(0x37D, report(1, seq), 1), (0x37C, report(2, seq), 2)]
+          with patch('opendbc.car.gm.interface.time.monotonic', return_value=now):
+            ret = ci.update([(int(now * 1e9), messages)])
+          if seq >= 5:
+            self.assertTrue(ret.canValid and ret.ascmReady)
+            self.assertEqual(ret.ascmStatus, 'Ready')
+            self.assertFalse(ret.buttonEnable)
+            self.assertIsNone(ci.CS.ascm.pending_until)
+
+  def test_longitudinal_counters_follow_independent_successful_echoes(self):
+    from unittest.mock import patch
+    from opendbc.car import gen_empty_fingerprint
+    from opendbc.car.gm.interface import CarInterface
+
+    for rejected in ((0x2CB,), (0x37F,), (0x2CB, 0x37F)):
+      with self.subTest(rejected=rejected):
+        cp = CarInterface.get_params(CAR.CHEVROLET_VOLT, gen_empty_fingerprint(), [], False, False, False)
+        ci = CarInterface(cp)
+        controller = make_controller(flags=cp.flags)
+        control = make_control()
+        control.enabled = control.longActive = False
+
+        def receive(messages, now, ci=ci):
+          with patch('opendbc.car.gm.interface.time.monotonic', return_value=now * 1e-9):
+            ci.update([(now, messages)])
+
+        receive([], 1_000_000_000)
+        last_success = {0x2CB: 3, 0x37F: 3}
+        for seq in range(8):
+          now = 1_000_000_000 + seq * 40_000_000
+          controller.frame = seq * 4
+          _, messages = controller.update(control.as_reader(), ci.CS, now)
+          echoes = []
+          for addr, data, _bus in messages:
+            if addr not in last_success:
+              continue
+            counter = data[0] >> 6 if addr == 0x2CB else data[4] & 3
+            self.assertEqual(counter, (last_success[addr] + 1) % 4)
+            if seq in (2, 3) and addr in rejected:
+              # Rejected attempts and actuator-network traffic cannot advance it.
+              echoes.extend([(addr, data, 193), (addr, data, 0), (addr, data, 2)])
+            else:
+              last_success[addr] = counter
+              echoes.append((addr, data, 129))
+          receive(echoes, now + 10_000_000)
+        self.assertEqual(ci.CS.ascm_next_counters, {addr: (count + 1) % 4 for addr, count in last_success.items()})
+
   def test_interface_status_binding_and_driver_handshake(self):
     from unittest.mock import patch
     from opendbc.car import Bus, gen_empty_fingerprint
@@ -377,12 +448,12 @@ class TestC11Engagement(unittest.TestCase):
       self.assertTrue(self.step(seq))
       self.assertTrue(self.controller.c11_engaged)
 
-  def test_longitudinal_override_does_not_create_an_engagement_edge(self):
+  def test_longitudinal_override_preserves_engagement(self):
     self.assertTrue(self.step(2))
     self.control.longActive = False
-    self.assertFalse(self.step(3))
+    self.assertTrue(self.step(3))
     self.control.longActive = True
-    self.assertFalse(self.step(4))
+    self.assertTrue(self.step(4))
     # A complete session disengagement followed by a new enable can rearm.
     self.control.enabled = False
     self.assertFalse(self.step(5))

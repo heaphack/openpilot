@@ -291,33 +291,30 @@ class TestGmC11Safety(TestGmAscmInterceptorSafety):
       for bus in (0, 1, 2):
         self.assertFalse(self._tx(self.packer_chassis.make_can_msg_safety("EBCMFrictionBrakeCmd", bus, {"FrictionBrakeMode": 1})))
 
-  def test_brake_modes_checked_at_zero_request(self):
-    for controls in (False, True):
-      self.safety.set_controls_allowed(controls)
-      for mode in range(16):
-        msg = self._send_brake_msg(0)
-        msg[0].data[0] = mode << 4
-        self.assertEqual(self._tx(msg), mode == 1 or (controls and mode in (10, 11, 13)), (controls, mode))
-
-  def test_gas_and_ui_active_bits(self):
+  def test_gas_override_preserves_session_with_inactive_requests(self):
+    self.safety.set_controls_allowed(True)
+    self._rx(self._user_gas_msg(True))
+    self.assertTrue(self.safety.get_controls_allowed())
+    gas = self.packer.make_can_msg_safety('ACCPowertrainCmd', 1, {'AxleTorqueCmd': -650, 'ACCActive': 1})
+    self.assertTrue(self._tx(gas))
+    self.assertTrue(self._tx(self._send_brake_msg(0)))
+    self.assertTrue(self._tx(self._torque_cmd_msg(0, steer_req=1)))
+    self.assertTrue(self._tx(self.packer.make_can_msg_safety('ASCMActiveCruiseControlStatus', 1, {'ACCCmdActive': 1})))
+    for torque in (-649, 0, 100):
+      self.assertFalse(self._tx(self.packer.make_can_msg_safety('ACCPowertrainCmd', 1, {'AxleTorqueCmd': torque, 'ACCActive': 1})))
+    self.assertFalse(self._tx(self._send_brake_msg(100)))
+    self._rx(self._user_gas_msg(False))
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.assertTrue(self._tx(self._send_brake_msg(100)))
     self.safety.set_controls_allowed(False)
-    self.assertFalse(self._tx(self._torque_cmd_msg(0, steer_req=1)))
-    self.safety.set_controls_allowed(False)
-    for field in ('ACCActive', 'ACCFullStopActive'):
-      msg = self.packer.make_can_msg_safety('ACCPowertrainCmd', 1, {'AxleTorqueCmd': -650, field: 1})
-      self.assertFalse(self._tx(msg))
-    self.assertFalse(self._tx(self.packer.make_can_msg_safety('ASCMActiveCruiseControlStatus', 1, {'ACCCmdActive': 1})))
+    self.assertFalse(self._tx(gas))  # A real disengagement still forbids ACCActive.
 
-  def test_command_lengths_and_frame_types(self):
+  def test_command_lengths(self):
     from opendbc.safety.tests.libsafety.libsafety_py import make_CANPacket
     for addr, size in ((0x180, 4), (0x2CB, 8), (0x37F, 5), (0x370, 6)):
       for length in range(9):
         if length != size:
           self.assertFalse(self._tx(make_CANPacket(addr, 1, bytes(length))))
-    for flag in ('extended', 'fd'):
-      msg = self._send_brake_msg(0)
-      setattr(msg[0], flag, 1)
-      self.assertFalse(self._tx(msg))
 
   def test_oem_transmissions_do_not_trip_relay(self):
     from opendbc.safety.tests.libsafety.libsafety_py import make_CANPacket

@@ -14,6 +14,7 @@ from openpilot.cereal import log
 from openpilot.selfdrive.car.car_events import CarEvents
 from openpilot.selfdrive.controls.controlsd import Controls
 from openpilot.selfdrive.selfdrived.state import StateMachine
+from openpilot.selfdrive.selfdrived.events import ET
 
 
 class Subscriptions(dict):
@@ -91,22 +92,82 @@ class TestC11ControlPipeline(unittest.TestCase):
     self.assertFalse(messages[0x180][0] & 8)
     self.assertEqual(messages[0x37F][:2], bytes.fromhex('1000'))
 
-  def test_pedals_still_disable_through_carstate_authorization(self):
-    # CarState withdraws c11 readiness for all three pedals, even at standstill.
-    for pedal in ('gasPressed', 'brakePressed', 'regenBraking'):
+  def test_brake_and_regen_use_normal_driver_disable(self):
+    for pedal in ('brakePressed', 'regenBraking'):
       with self.subTest(pedal=pedal):
         self.setUp()
         self.assertTrue(self.step()[0x2CB][0] & 1)
         previous = self.state.out.as_reader().as_builder()
         setattr(self.state.out, pedal, True)
-        self.state.out.ascmReady = False
         events = CarEvents(self.cp).update(self.state.out, previous, self.control)
+        # selfdrived adds this for the rising brake/regen edge.
+        events.add(log.OnroadEvent.EventName.pedalPressed)
+        self.assertNotIn(log.OnroadEvent.EventName.ascmUnavailable, events.names)
         machine = StateMachine()
         machine.state = log.SelfdriveState.OpenpilotState.enabled
         machine.update(events)
         self.assertEqual(machine.state, log.SelfdriveState.OpenpilotState.disabled)
+        self.assertIn(ET.USER_DISABLE, machine.current_alert_types)
+        self.assertNotIn(ET.IMMEDIATE_DISABLE, machine.current_alert_types)
         # Even before controlsd processes that disable, the final sender gate releases.
         messages = self.step()
         self.assertFalse(messages[0x2CB][0] & 1)
         self.assertFalse(messages[0x180][0] & 8)
         self.assertEqual(messages[0x37F][:2], bytes.fromhex('1000'))
+
+  def test_gas_override_retains_steering_and_session_then_resumes(self):
+    self.control.actuators.accel = 1.
+    self.assertTrue(self.step()[0x2CB][0] & 1)
+    machine = StateMachine()
+    machine.state = log.SelfdriveState.OpenpilotState.enabled
+    # Exceed the confirmation timeout while overridden. ACCActive never drops.
+    for _ in range(6):
+      self.state.out.gasPressed = True
+      events = CarEvents(self.cp).update(self.state.out, self.state.out, self.control)
+      machine.update(events)
+      self.assertEqual(machine.state, log.SelfdriveState.OpenpilotState.overriding)
+      self.assertNotIn(log.OnroadEvent.EventName.ascmUnavailable, events.names)
+      # Leave the incoming longActive true to exercise immediate pedal handling
+      # before controlsd's next update; normal controlsd will set it false.
+      messages = self.step()
+      self.assertTrue(messages[0x180][0] & 8)
+      self.assertTrue(messages[0x2CB][0] & 1)
+      self.assertEqual(messages[0x2CB][1:4], bytes.fromhex('42abe0'))
+      self.assertEqual(messages[0x37F][:2], bytes.fromhex('1000'))
+      self.assertTrue(messages[0x370][2] & 0x80)
+    self.state.out.gasPressed = False
+    events = CarEvents(self.cp).update(self.state.out, self.state.out, self.control)
+    machine.update(events)
+    self.assertEqual(machine.state, log.SelfdriveState.OpenpilotState.enabled)
+    self.assertTrue(self.step()[0x2CB][0] & 1)
+    self.assertGreater(self.controller.axle_torque_cmd, -650.)
+
+  def test_fault_during_gas_override_still_disables(self):
+    self.assertTrue(self.step()[0x2CB][0] & 1)
+    self.state.out.gasPressed = True
+    self.assertTrue(self.step()[0x2CB][0] & 1)
+    self.state.out.ascmReady = False
+    events = CarEvents(self.cp).update(self.state.out, self.state.out, self.control)
+    machine = StateMachine()
+    machine.state = log.SelfdriveState.OpenpilotState.overriding
+    machine.update(events)
+    self.assertEqual(machine.state, log.SelfdriveState.OpenpilotState.disabled)
+    self.assertIn(ET.IMMEDIATE_DISABLE, machine.current_alert_types)
+    self.assertFalse(self.step()[0x2CB][0] & 1)
+    self.state.out.ascmReady = True
+    self.state.out.gasPressed = False
+    self.assertFalse(self.step()[0x2CB][0] & 1)  # Recovery alone never rearms.
+
+  def test_gas_override_releases_standstill_hold_without_cancelling(self):
+    self.state.out.standstill = True
+    self.state.out.vEgo = 0.
+    self.control.actuators.accel = -2.
+    self.control.actuators.longControlState = 'stopping'
+    self.assertEqual(self.step()[0x37F][0] >> 4, 0xD)
+    self.state.out.gasPressed = True
+    messages = self.step()
+    self.assertTrue(messages[0x2CB][0] & 1)
+    self.assertEqual(messages[0x2CB][1:4], bytes.fromhex('42abe0'))  # Inactive torque, stop bits clear.
+    self.assertEqual(messages[0x37F][:2], bytes.fromhex('1000'))
+    self.assertTrue(messages[0x370][2] & 0x80)
+    self.assertTrue(self.controller.c11_engaged)

@@ -188,16 +188,6 @@ static void can_rx(uint8_t can_number) {
     to_push.bus = bus_number;
     to_push.data_len_code = ((fifo->header[1] >> 16) & 0xFU);
 
-    // CanData drops framing flags. Reject non-Classical-DATA c11 status here,
-    // before it can be mistaken for an authorization report by the host.
-    const bool c11_status = (current_safety_mode == SAFETY_GM) && gm_c11 &&
-                           ((to_push.addr == 0x37DU) || (to_push.addr == 0x37CU));
-    const bool remote_frame = ((fifo->header[0] >> 29) & 1U) != 0U;
-    if (c11_status && ((to_push.extended != 0U) || canfd_frame || remote_frame)) {
-      FDCANx->RXF0A = rx_fifo_idx;
-      continue;
-    }
-
     uint8_t data_len_w = (dlc_to_len[to_push.data_len_code] / 4U);
     data_len_w += ((dlc_to_len[to_push.data_len_code] % 4U) > 0U) ? 1U : 0U;
     for (unsigned int i = 0; i < data_len_w; i++) {

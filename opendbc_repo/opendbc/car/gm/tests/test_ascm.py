@@ -114,18 +114,53 @@ class TestC11Supervisor(unittest.TestCase):
     self.assertTrue(self.s.driver_request(1.13, [], True))
     self.assertFalse(self.s.driver_request(1.14, [], True))
 
+  def test_press_during_selection_disagreement_is_retained(self):
+    for first_cpu in (1, 2):
+      for kind in ('decelCruise', 'accelCruise'):
+        with self.subTest(first_cpu=first_cpu, kind=kind):
+          self.s = AscmSupervisor()
+          self.qualify(owner=Owner.UNSELECTED)
+          addr, bus = (0x37D, 1) if first_cpu == 1 else (0x37C, 2)
+          self.s.receive(addr, report(first_cpu, 3), bus, 1.12)
+          self.assertFalse(self.s.driver_request(1.12, [button(kind)], True))
+          self.assertIsNotNone(self.s.pending_until)
+          self.assertFalse(self.s.permitted(1.12))
+          feed(self.s, 4, 1.16)
+          events = [button(kind, False)] if kind == 'decelCruise' else []
+          self.assertTrue(self.s.driver_request(1.16, events, True))
+          self.assertFalse(self.s.driver_request(1.16, [], True))
+
+  def test_disagreement_intent_requires_health_and_matching_generation(self):
+    for cause in ('oem', 'generation', 'unavailable', 'stale', 'pedal'):
+      with self.subTest(cause=cause):
+        self.s = AscmSupervisor()
+        self.qualify(owner=Owner.UNSELECTED)
+        self.s.receive(0x37D, report(1, 3), 1, 1.12)
+        if cause == 'oem':
+          self.s.receive(0x37C, report(2, 3, owner=Owner.OEM, available=False), 2, 1.12)
+        elif cause == 'generation':
+          self.s.receive(0x37C, report(2, 3, generation=2), 2, 1.12)
+        elif cause == 'unavailable':
+          self.s.receive(0x37C, report(2, 3, available=False), 2, 1.12)
+        now = 1.4 if cause == 'stale' else 1.12
+        self.assertFalse(self.s.driver_request(now, [button('decelCruise')], cause != 'pedal'))
+        self.assertIsNone(self.s.pending_until)
+
   def test_pending_cancel_pedal_timeout_reset_and_unavailability(self):
     for cause in ('cancel', 'pedal', 'timeout', 'reset', 'unavailable'):
       self.s = AscmSupervisor()
       self.qualify(owner=Owner.UNSELECTED)
-      self.s.driver_request(1.08, [button('decelCruise')], True)
+      self.s.receive(0x37D, report(1, 3), 1, 1.09)
+      self.s.driver_request(1.09, [button('decelCruise')], True)
+      self.assertIsNotNone(self.s.pending_until)
       if cause == 'reset':
         feed(self.s, 3, 1.12, generation=2)
       elif cause == 'unavailable':
         feed(self.s, 3, 1.12, available=False)
       elif cause == 'timeout':
         for seq in range(3, 24):
-          feed(self.s, seq, 1. + seq * .04, owner=Owner.UNSELECTED)
+          self.s.receive(0x37D, report(1, seq), 1, 1. + seq * .04)
+          self.s.receive(0x37C, report(2, seq, owner=Owner.UNSELECTED), 2, 1. + seq * .04)
       self.s.driver_request(1.92 if cause == 'timeout' else 1.12,
                             [button('cancel')] if cause == 'cancel' else [], cause != 'pedal')
       for seq in range(24, 27):
@@ -231,12 +266,12 @@ class TestC11Integration(unittest.TestCase):
       ci.update([])  # register the signals the dynamic parser consumes
     packer = CANPacker('gm_global_a_powertrain_generated')
 
-    def update(seq, buttons=1, owner=Owner.UNSELECTED, main=True, run=True):
+    def update(seq, buttons=1, owner=Owner.UNSELECTED, main=True, run=True, peer_owner=None):
       now = int((1. + seq * .04) * 1e9) * 1e-9
       fields = {'ECMEngineStatus': {'CruiseMainOn': main}, 'BCMGeneralPlatformStatus': {'SystemPowerMode': 2 if run else 0},
                 'ASCMSteeringButton': {'ACCButtons': buttons}, 'HPCMAxleTorqueLimits': {'AxleTorqueMin': -650}}
       messages = [packer.make_can_msg(st.name, 0, fields.get(st.name, {})) for st in ci.can_parsers[Bus.pt].message_states.values()]
-      messages += [(0x37D, report(1, seq, owner=owner), 1), (0x37C, report(2, seq, owner=owner), 2)]
+      messages += [(0x37D, report(1, seq, owner=owner), 1), (0x37C, report(2, seq, owner=owner if peer_owner is None else peer_owner), 2)]
       with patch('opendbc.car.gm.interface.time.monotonic', return_value=now):
         return ci.update([(int(now * 1e9), messages)])
 
@@ -244,7 +279,7 @@ class TestC11Integration(unittest.TestCase):
       ret = update(seq)
     self.assertTrue(ret.canValid)
     self.assertFalse(ret.ascmReady)
-    self.assertFalse(update(6, buttons=3).buttonEnable)
+    self.assertFalse(update(6, buttons=3, owner=Owner.OPENPILOT, peer_owner=Owner.UNSELECTED).buttonEnable)
     ret = update(7, owner=Owner.OPENPILOT)
     self.assertTrue(ret.buttonEnable, (ret.to_dict(), ci.CS.ascm.__dict__))
     self.assertTrue(ret.ascmReady)
@@ -316,3 +351,65 @@ class TestC11Integration(unittest.TestCase):
     _, messages = controller.update(control.as_reader(), state, 1_110_000_000)
     steer = next(m for m in messages if m[0] == 0x180)
     self.assertFalse(steer[1][0] & 8)
+
+
+class TestC11Engagement(unittest.TestCase):
+  def setUp(self):
+    self.controller = make_controller(flags=CAR.CHEVROLET_VOLT.config.flags)
+    self.state, self.control = make_state(), make_control()
+    self.state.ascm = AscmSupervisor()
+    self.state.out.ascmReady = True
+    self.control.latActive = True
+    for seq in range(3):
+      feed(self.state.ascm, seq, (1_000_000_000 + seq * 40_000_000) * 1e-9)
+
+  def step(self, seq, active=True):
+    now_nanos = 1_000_000_000 + seq * 40_000_000
+    if seq > 2:
+      feed(self.state.ascm, seq, now_nanos * 1e-9, active=active)
+    self.controller.frame = seq * 4
+    _, messages = self.controller.update(self.control.as_reader(), self.state, now_nanos)
+    return bool(next(m[1][0] & 1 for m in messages if m[0] == 0x2CB))
+
+  def test_stock_cancel_does_not_interrupt_active_commands(self):
+    for seq, cancel in enumerate((False, True, True, False, True, False, True), start=2):
+      self.control.cruiseControl.cancel = cancel
+      self.assertTrue(self.step(seq))
+      self.assertTrue(self.controller.c11_engaged)
+
+  def test_longitudinal_override_does_not_create_an_engagement_edge(self):
+    self.assertTrue(self.step(2))
+    self.control.longActive = False
+    self.assertFalse(self.step(3))
+    self.control.longActive = True
+    self.assertFalse(self.step(4))
+    # A complete session disengagement followed by a new enable can rearm.
+    self.control.enabled = False
+    self.assertFalse(self.step(5))
+    self.control.enabled = True
+    self.assertTrue(self.step(6))
+
+  def test_cancel_flag_cannot_rearm_after_fault(self):
+    self.assertTrue(self.step(2))
+    self.state.out.ascmReady = False
+    self.control.cruiseControl.cancel = True
+    self.assertFalse(self.step(3))
+    self.state.out.ascmReady = True
+    self.control.cruiseControl.cancel = False
+    self.assertFalse(self.step(4))
+
+  def test_actual_disengagement_releases_despite_stock_cancel(self):
+    self.assertTrue(self.step(2))
+    self.control.enabled = False
+    self.control.cruiseControl.cancel = True
+    self.assertFalse(self.step(3))
+    self.control.enabled = True
+    self.assertTrue(self.step(4))
+
+  def test_cancel_flag_does_not_reset_active_confirmation_watchdog(self):
+    self.assertTrue(self.step(2))
+    for seq in range(3, 9):
+      self.control.cruiseControl.cancel = bool(seq % 2)
+      self.step(seq, active=False)
+    self.assertFalse(self.controller.c11_engaged)
+    self.assertEqual(self.state.ascm.reason, 'ASCM active forwarding not confirmed')

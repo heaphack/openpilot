@@ -150,3 +150,48 @@ eb4140d2bf3b41a7a7f96d74aa59b69f19854cb280c1c368cea1e0d6b8fbb25d  bootstub.body_
 2b9aa20b622142fe888bda7ec4c3a02e252c110746895b978826e3e536920588  panda_h7.bin.signed
 063b9c0dc382d09077c697c699057502b0349e7a19701156f0d30c3abddfb2b1  body_h7.bin.signed
 ```
+
+## Drive regression fixes — 2026-10-31
+
+The drive on source revision `f5d909c11` exposed two host integration defects.
+`controlsd` legitimately asserts `cruiseControl.cancel` when the ECU reports cruise
+active and `pcmCruise=false`, even while openpilot remains enabled. Treating that
+stock-PCM request as a c11 disengagement interrupted ACCActive and cleared the
+ASCM engagement latch. Clearing the flag then incorrectly rearmed the sender.
+
+The c11 sender now ignores the stock-PCM cancel flag for session authorization.
+Physical CANCEL still disables the openpilot state machine, and pedal, readiness,
+epoch, and longitudinal-disable gates still release both axes. The rearm edge
+tracks actual `CarControl.enabled`, so neither clearing stock cancel nor ending
+a longitudinal override can rearm an interrupted session while enabled stays true.
+The active-confirmation watchdog and all safety limits/deadlines are unchanged.
+
+A SET/RESUME press can now establish bounded pending intent while healthy peers
+report UNSELECTED/OPENPILOT during selection. Freshness, qualification, matching
+generation, independent output progress, and the existing 750 ms expiry remain
+required. Both owners must agree on OPENPILOT before activation; SET still requires
+release. Cancel, pedal disable, reset, timeout, or loss of readiness clears intent.
+This also covers the case where an ASCM processor sees SET before the host does.
+
+Validation:
+
+- New supervisor/controller regressions reproduce the failures on the old code
+  and pass after the fix, including rejection of synthetic rearm edges.
+- The real `Controls.publish()` method is exercised through the GM controller:
+  ECU cruise ON/OFF changes the stock-cancel flag without interrupting active
+  commands. Separate checks cover physical CANCEL and pedal-disable event handling.
+- Broad GM car, all car-interface, GM safety and diagnostic safety checks:
+  614 passed, 145 skipped, plus 567 passing subtests.
+- Seven application-path tests pass, with three pedal subtests. As with the
+  original host-only validation, native Params and unrelated model/calibration
+  process imports were substituted; the real publish/event/state/controller
+  implementations ran. No full application startup is claimed.
+- Offline probes at the first synthetic cancellation of all 11 recorded
+  engagements preserve ACCActive with this fix and withdraw it with the original
+  controller. The first-SET reproduction now enables on release after agreement.
+  These probes use recorded status/timing, not a closed-loop physical replay.
+  Results are saved under `~/volt_logs/ascm_unavailable_2026-10-31/fix_validation/`.
+
+Only host Python and tests changed. The existing Panda artifacts remain applicable;
+no ASCM or Panda firmware rebuild/change is needed for these fixes. No deployment,
+flashing, live CAN transmission, or vehicle test was performed.

@@ -173,7 +173,12 @@ class AscmSupervisor:
         return False
       if event.type in ("accelCruise", "decelCruise") and event.pressed:
         # A physical press is the intent; SET must also be released for Panda.
-        if self.streams[0].report.owner == self.streams[1].report.owner:
+        # The ASCM can process the press before the host, so either processor
+        # may already report OPENPILOT while its peer is still UNSELECTED.
+        # healthy() above requires fresh qualified inputs, output progress and
+        # matching generations. Ownership must agree before permitted() grants
+        # this request; disagreement here must not discard the physical press.
+        if all(s.report.owner in (Owner.UNSELECTED, Owner.OPENPILOT) for s in self.streams):
           self.pending_until = now + PENDING_TIMEOUT
           self.pending_epoch = self.epoch
           self.set_released = event.type == "accelCruise"

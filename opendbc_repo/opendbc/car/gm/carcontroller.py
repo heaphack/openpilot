@@ -197,13 +197,16 @@ class CarController(CarControllerBase):
       # Independent final gate, including freshness at send time. Recovery cannot reactivate
       # a still-enabled controls process; it must first disengage and accept a new driver request.
       ready = CS.ascm.permitted(now_nanos * 1e-9) and CS.out.ascmReady
-      enabled = CC.enabled and CC.longActive and not CC.cruiseControl.cancel
-      if not ready or not enabled or (self.c11_engaged and self.c11_epoch != CS.ascm.epoch):
+      # cruiseControl.cancel is a stock-PCM request, not a driver/session disable.
+      # With pcmCruise=False controlsd asserts it when our ASCM enables ECU cruise.
+      # Only the actual session's enabled edge can rearm after withdrawing active
+      # commands; neither clearing stock cancel nor ending a long override can.
+      if not ready or not CC.enabled or not CC.longActive or (self.c11_engaged and self.c11_epoch != CS.ascm.epoch):
         self.c11_engaged = False
       elif not self.c11_enabled_prev:
         self.c11_engaged = True
         self.c11_epoch = CS.ascm.epoch
-      self.c11_enabled_prev = enabled
+      self.c11_enabled_prev = CC.enabled
       CC = CC.as_builder()
       if not self.c11_engaged:
         CC.enabled = CC.latActive = CC.longActive = False

@@ -1,4 +1,4 @@
-"""dev-v7-c11 ownership supervisor. Times are seconds on the CAN monotonic clock.
+"""own-v1 forwarding supervisor on c11 transport. Times are CAN monotonic seconds.
 
 These host deadlines are provisional; they are not physical actuator latency bounds.
 Live CAN format follows the existing GM Global A transport assumptions. The decoder
@@ -17,14 +17,13 @@ class Owner(IntEnum):
 STATUS_TIMEOUT = 0.160
 OUTPUT_TIMEOUT = (0.220, 0.160, 0.160, 0.160)  # steering, gas, UI, brake
 PENDING_TIMEOUT = 0.750
-ACTIVE_TIMEOUT = 0.160
 
 
 @dataclass(frozen=True)
 class Report:
   owner: Owner
   available: bool
-  active: bool
+  forwarding_permitted: bool
   sequence: int
   generation: int
   modes: tuple[int, ...]
@@ -38,8 +37,8 @@ def decode(address, data, bus, *, extended=False, remote=False):
     raise ValueError("c11 status transport")
   header, seq, modes, reasons, a, b, c, generation = data
   owner = header & 3
-  available, active = bool(header & 4), bool(header & 8)
-  if header >> 4 != 2 or owner == 3 or (active and owner != Owner.OPENPILOT) or (available and owner == Owner.OEM):
+  available, forwarding_permitted = bool(header & 4), bool(header & 8)
+  if header >> 4 != 2 or owner == 3 or (forwarding_permitted and owner != Owner.OPENPILOT) or (available and owner == Owner.OEM):
     raise ValueError("c11 status header")
   if address == 0x37D:
     mode, reason, completed = (modes >> 4, modes & 15), (reasons >> 4, reasons & 15), (a, b, c)
@@ -49,7 +48,7 @@ def decode(address, data, bus, *, extended=False, remote=False):
     mode, reason, completed = (modes & 15,), (reasons & 15,), (a,)
   if any(v > 2 for v in mode) or any(v > 4 for v in reason):
     raise ValueError("c11 status mode/reason")
-  return Report(Owner(owner), available, active, seq, generation, mode, reason, completed, bytes(data))
+  return Report(Owner(owner), available, forwarding_permitted, seq, generation, mode, reason, completed, bytes(data))
 
 
 @dataclass
@@ -67,7 +66,6 @@ class AscmSupervisor:
     self.pending_until = None
     self.pending_epoch = 0
     self.set_released = False
-    self.active_since = None
     self.reason = "Waiting for both c11 status streams"
 
   def invalidate(self, reason):
@@ -77,7 +75,6 @@ class AscmSupervisor:
       stream.progress = [None] * len(stream.progress)
     self.epoch += 1
     self.pending_until = None
-    self.active_since = None
     self.reason = reason
 
   def receive(self, address, data, bus, now):
@@ -102,6 +99,7 @@ class AscmSupervisor:
       elif (report.sequence - old.sequence) % 256 > 8:
         self.invalidate("Status sequence restarted")
       if ((old.available and not report.available) or (old.owner == Owner.OPENPILOT and report.owner != old.owner) or
+          (old.forwarding_permitted and not report.forwarding_permitted) or
           (all(m == 1 for m in old.modes) and any(m != 1 for m in report.modes))):
         self.invalidate("ASCM readiness withdrawn")
     if stream.count == 0:
@@ -146,17 +144,14 @@ class AscmSupervisor:
     if any(s.report.owner != Owner.OPENPILOT for s in self.streams):
       self.reason = "Waiting for agreed OPENPILOT ownership"
       return False
-    if self.active_since is not None and now - self.active_since > ACTIVE_TIMEOUT and not all(s.report.active for s in self.streams):
-      self.invalidate("ASCM active forwarding not confirmed")
+    # own-v1 grants permission while commands are still inactive. It must remain
+    # asserted across disengagement, pedal override and the ACCActive resume pulse.
+    # It is authorization to forward commands, not confirmation of engagement.
+    if not all(s.report.forwarding_permitted for s in self.streams):
+      self.reason = "Waiting for both ASCM forwarding permissions"
       return False
     self.reason = "Ready"
     return True
-
-  def command_active(self, active, now):
-    if not active:
-      self.active_since = None
-    elif self.active_since is None:
-      self.active_since = now
 
   @property
   def oem_owned(self):

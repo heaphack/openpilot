@@ -1,21 +1,30 @@
-# Volt ASCM dev-v7-c11 integration
+# Volt ASCM own-v1 integration on c11 transport
 
 Branch base: `nightly-chestnut-10-19-26`, `203b977c79df4bd83a999f6c31644f2b72437524`.
-Contract: `ASCM/shadow_180_dev/OPENPILOT_C11_INTEGRATION_HANDOFF.txt`, prepared 2026-10-29.
+Current contract: `ASCM/shadow_180_dev/OWNERSHIP_FORWARDING_V1_HANDOFF.txt` and
+`protocol/status_v2_ownership/DECODING.txt` in that directory. These supersede the
+engagement-latch and status-bit semantics in the original
+`OPENPILOT_C11_INTEGRATION_HANDOFF.txt` (2026-10-29); command transport is unchanged.
 This is an offline implementation, not a hardware release or authorization for live testing.
 
 ## Configuration and transport
 
 The Volt platform explicitly selects `GMFlags.ASCM_C11`, together with the existing
 `ASCM_INTERCEPTOR` and `ASCM_LONG` flags. Panda receives `GMSafetyFlags.ASCM_C11` (16).
-There is no status-based autodetection: c10 and c11 share the same payload version.
+There is no status-based autodetection: c10, c11 and own-v1 share the same payload version.
 Other GM configurations retain their prior routing and longitudinal allocation.
 The OEM 25-bit 0x2CB checksum correction applies to all senders of that message.
 
-This configuration requires the paired dev-v7-c11 images:
+This configuration now requires the complete paired `own-v1-monitor` selection:
+`ASCM/shadow_180_dev/firmware/own-v1-monitor/firmware-selection.json`.
 
-- MPU1 SHA256: `8c69f8dbd3226a89a2c5bf4c0fda012473b71c9a9f116f097080b2c806aa223e`
-- MPU2 SHA256: `815c3f97e1ca0fbbaf02624d3f6905059a7d8c0ed96daaa018c62f52c25497c5`
+- MPU1 SHA256: `bf675645264ce885dff751c6e37ed86032e3c4ef2f87bec91711f68a8ac051cd`
+- MPU2 SHA256: `79122bb7176197a814bfee94b173e9355433c0746a03930b72db50fcbea84df5`
+
+The old c11 images are no longer a compatible target: they withhold permission
+until active commands arrive and clear their engagement latch during the resume
+pulse. The host now requires permission before active commands. Record both ASCM
+image identities with validation runs; protocol version 2 cannot identify them.
 
 Assumed physical mapping: PT=0, object=1, chassis=2. Verify the installed harness.
 The four permitted Panda transmissions are object 0x180/DLC4, 0x2CB/DLC8,
@@ -59,19 +68,26 @@ Last raw local reports and a host diagnostic reason are logged in CarState's
 A fresh SET press stores at most 750 ms of driver intent, with its release required
 before enabling to match Panda. RESUME uses its rising edge. While selection moves
 from UNSELECTED to OPENPILOT, temporary owner disagreement holds commands inactive.
-Both OPENPILOT reports are required before the pending intent produces buttonEnable.
+Both OPENPILOT reports and their forwarding permissions are required before the
+pending intent produces buttonEnable. Permission alone never creates driver intent.
 Cancel, pedals, main/ignition disable, lost readiness, generation/reset changes,
 or expiry discard the pending request. Readiness recovery never generates intent.
 
 OEM ownership inhibits openpilot and displays a cruise-main-cycle explanation.
-The host never synthesizes OFF, SET, RESUME, or LKA button messages. The firmware
-retains OEM LKA suppression/restoration policy; status does not expose OEM LKA state.
+The host never synthesizes OFF, SET, RESUME, or LKA button messages. own-v1 suppresses
+OEM LKA throughout OPENPILOT ownership, including disengagement and resume. After
+ownership resets, the firmware requires a fresh LKA release/press to restore OEM
+eligibility. Status does not expose OEM LKA state.
 
 The controller independently checks authorization at send time. A fault disables
 both lateral and longitudinal requests, including release during braking/standstill.
-Recovery while controls remains enabled cannot reactivate commands. After active
-entry, both processors must report active forwarding within 160 ms; that bit is
-not required before sending the first active command. Alerts immediately disable
+Recovery while controls remains enabled cannot reactivate commands. Byte 0 bit 3
+is decoded as `forwarding_permitted`, independent of command-active flags. Both
+processors must grant permission before the first active command and retain it
+throughout the session. Permission withdrawal invalidates qualification and the
+controller's authorization epoch, even if it recovers within one CAN batch. The
+old active-confirmation timer is removed; status/output freshness deadlines remain.
+Alerts immediately disable
 the openpilot state machine on lost authorization. Pedals are not classified as
 ASCM faults: brake/regen retain normal driver disengagement; gas temporarily
 overrides longitudinal actuation while session ACCActive, UI-active and eligible
@@ -81,12 +97,16 @@ pedal sample. Release resumes longitudinal control only within that same healthy
 session. A real fault during override still disables both axes and requires a
 new engagement. Pedals continue to inhibit new pending SET/RESUME requests.
 
-c11 disables the legacy automatic-resume ACCActive pulse: it clears the firmware's
-engagement latch. ACC standstill is reported to the normal resume-required path;
-physical driver resume is required. The powertrain-versus-brake allocator remains
-separate from OEM-versus-OPENPILOT ownership. Actual stop/hold/physical-resume/launch
-behavior still requires a paired ASCM bench test, then separately authorized vehicle
-validation. No alternate firmware rearm policy is assumed.
+Volt auto resume is enabled with openpilot longitudinal control. The ECM standstill
+latch remains available to the controller but does not force the longitudinal
+planner to wait for a physical RESUME. The ASCM allocator keeps brake hold until
+launch intent clears its stop latch, then drops ACCActive while the ECM still
+reports standstill. It restores ACCActive once the ECM leaves standstill. UI and
+eligible steering remain active throughout; own-v1 permission remains independent.
+The existing pulse is also restored for the legacy allocator when auto resume is
+configured. The powertrain-versus-brake allocator remains separate from firmware
+ownership. Actual stop/hold/resume/launch behavior still requires paired ASCM bench
+and vehicle validation; host tests do not establish physical actuator acceptance.
 
 ## Timing and validation limits
 
@@ -103,7 +123,7 @@ The firmware's reported sub-184-ms emulator command-loss result is separate evid
 
 Required external validation remains: actual harness buses, object TX loopback at
 startup and dropped TX, chassis status delivery, full paired-firmware first engagement,
-OEM-first/late boot/OEM LKA operation, physical resume, bus-off/congestion/output stalls,
+OEM-first/late boot/OEM LKA operation, automatic resume, bus-off/congestion/output stalls,
 one-MPU resets, and end-to-end actuator withdrawal. Matching generation bytes cannot
 reliably detect every reboot. Buffered old CAN traffic cannot be proven current from
 these sequence fields alone. No live CAN, flashing, or driving was performed.
@@ -253,8 +273,8 @@ Offline comparison/replay scripts and results are in
 `~/volt_logs/ascm_pedal_overrides_2026-10-31/minimum_fix_validation/`.
 Both H7 applications and debug bootstubs were rebuilt for this update; no ASCM
 firmware change is included. No deployment, flashing or vehicle validation has been performed.
-Automatic standstill resume remains disabled for c11 because the baseline pulse
-cancels its engagement latch; this update restores pedal override, not that pulse.
+At this revision, automatic standstill resume remained disabled for the old c11
+firmware. The own-v1 update below supersedes that restriction.
 
 ### Panda artifacts for the minimum integration
 
@@ -269,3 +289,34 @@ Build completed with warnings treated as errors; no device was flashed.
 96bbb72e326da109bd26f86435ea16cf1e425fac3cc463fdc7f77da6a36cc157  bootstub.panda_h7.bin
 b18cf11c08357075bbce13e36b72ad9c4051848b85d21780dc000906814396dc  bootstub.body_h7.bin
 ```
+
+### own-v1 automatic resume update — 2026-11-04
+
+Restored the Volt auto-resume configuration and both allocator pulse paths for
+the paired own-v1 firmware. The supervisor now requires both forwarding bits
+before entry and invalidates the session on either bit's withdrawal. Permission
+does not imply engagement, create driver intent, or bypass cancellation. The
+existing gas override, brake/regen disengagement, command counters, numerical
+safety limits and status/output deadlines are retained. No Panda source or
+firmware artifact change is required; the preceding Panda build remains current.
+
+Validation:
+
+- GM controller/interface and compiled GM/diagnostic safety suites: **618 passed,
+  145 skipped, 575 subtests passed**.
+- Application-path suite: **12 passed, 10 subtests passed**, using the real
+  LongControl, controlsd publish path, GM sender, and compiled Panda TX hook for
+  the stop/hold/launch sequence. Powertrain and downhill brake-controlled launches
+  retain steering/UI, clear full-stop during the pulse, and restore ACCActive
+  when the ECM standstill fixture clears. Pedals, CANCEL, and either processor's
+  permission loss during a pulse retain their override/disengagement behavior.
+- Supervisor tests cover permission before first entry, duplicate rejection,
+  pending intent cancellation, and permission loss/requalification between
+  controller ticks without automatic re-engagement.
+- Ruff and `git diff --check` pass.
+
+The application tests use the same host IPC extension and unused process-import
+substitutions described above. Status/ECM reports and TX echoes are test fixtures;
+these tests do not execute ASCM firmware or prove the physical ECM response to
+the pulse. Full application startup, paired ASCM bench testing and vehicle
+validation remain outstanding. No firmware was flashed or code deployed.

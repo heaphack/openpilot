@@ -161,7 +161,7 @@ class GMFlags(IntFlag):
   # commands enter on the obstacle bus, the ASCM keeps the radar and ADAS modules alive itself, and the
   # loopback of our own commands appears on that bus. Describes the harness, not the car.
   ASCM_INTERCEPTOR = 4
-  # Explicit dev-v7-c11 transport/ownership contract; requires the interceptor harness.
+  # c11 transport with own-v1 forwarding permission; requires the interceptor harness and paired own-v1 firmware.
   ASCM_C11 = 8
 
 

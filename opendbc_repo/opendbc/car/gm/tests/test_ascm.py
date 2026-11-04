@@ -8,12 +8,14 @@ from opendbc.can import CANPacker
 from opendbc.car.gm import gmcan
 from opendbc.car.gm.ascm import AscmSupervisor, decode, Owner
 from opendbc.car.gm.tests.test_volt_longitudinal import make_controller, make_state, make_control
-from opendbc.car.gm.values import CAR
+from opendbc.car.gm.values import CAR, AccState
 
 
-def report(cpu, seq, owner=Owner.OPENPILOT, generation=1, available=True, active=False, counts=None):
+def report(cpu, seq, owner=Owner.OPENPILOT, generation=1, available=True, forwarding_permitted=None, counts=None):
   counts = counts or (seq, seq, seq)
-  return bytes([0x20 | owner | (4 if available else 0) | (8 if active else 0), seq,
+  if forwarding_permitted is None:
+    forwarding_permitted = owner == Owner.OPENPILOT and available
+  return bytes([0x20 | owner | (4 if available else 0) | (8 if forwarding_permitted else 0), seq,
                 0x11 if cpu == 1 else 0xF1, 0 if cpu == 1 else 0xF0,
                 counts[0], counts[1] if cpu == 1 else 0, counts[2] if cpu == 1 else 0, generation])
 
@@ -40,6 +42,8 @@ class TestC11Supervisor(unittest.TestCase):
     for v in vectors['valid']:
       r = decode(v['identifier'], bytes.fromhex(v['payload']), {'object': 1, 'chassis': 2}[v['network']])
       self.assertEqual(r.owner.name.lower(), v['expected']['owner'])
+      # Bit 3 keeps its wire position; own-v1 changes it to session permission.
+      self.assertEqual(r.forwarding_permitted, v['expected']['active'])
       self.assertEqual(r.reasons, tuple(v['expected']['reasons'][key] for key in (('steering', 'longitudinal') if v['identifier'] == 0x37D else ('brake',))))
 
     for v in vectors['invalid'] + vectors['transport_invalid']:
@@ -176,13 +180,40 @@ class TestC11Supervisor(unittest.TestCase):
     self.assertFalse(self.s.driver_request(1.2, [], True))
     self.assertTrue(self.s.driver_request(1.2, [button('accelCruise')], True))
 
-  def test_active_is_confirmation_not_entry_condition(self):
+  def test_both_permissions_required_before_entry(self):
+    self.qualify(forwarding_permitted=False)
+    self.assertTrue(self.s.healthy(1.08))
+    self.assertFalse(self.s.driver_request(1.08, [button('accelCruise')], True))
+    self.s.receive(0x37D, report(1, 3), 1, 1.12)
+    self.assertFalse(self.s.driver_request(1.12, [], True))
+    # A duplicate may not grant permission, even when its bit has changed.
+    self.s.receive(0x37C, report(2, 2), 2, 1.12)
+    self.assertFalse(self.s.permitted(1.12))
+    self.s.receive(0x37C, report(2, 3), 2, 1.13)
+    self.assertTrue(self.s.driver_request(1.13, [], True))
+
+  def test_permission_does_not_create_driver_intent(self):
     self.qualify()
-    self.assertTrue(self.s.permitted(1.08))
-    self.s.command_active(True, 1.08)
-    for seq in range(3, 8):
-      feed(self.s, seq, 1. + seq * .04)
-    self.assertFalse(self.s.permitted(1.28))
+    for seq in range(3, 12):
+      now = 1. + seq * .04
+      feed(self.s, seq, now)
+      self.assertTrue(self.s.permitted(now))
+      self.assertFalse(self.s.driver_request(now, [], True))
+
+  def test_either_permission_loss_invalidates_pending_intent(self):
+    for cpu, address, bus in ((1, 0x37D, 1), (2, 0x37C, 2)):
+      with self.subTest(cpu=cpu):
+        self.s = AscmSupervisor()
+        self.qualify()
+        epoch = self.s.epoch
+        self.assertFalse(self.s.driver_request(1.08, [button('decelCruise')], True))
+        self.s.receive(address, report(cpu, 3, forwarding_permitted=False), bus, 1.12)
+        self.assertGreater(self.s.epoch, epoch)
+        self.assertFalse(self.s.permitted(1.12))
+        for seq in range(4, 7):
+          feed(self.s, seq, 1. + seq * .04)
+        self.assertTrue(self.s.permitted(1.24))
+        self.assertFalse(self.s.driver_request(1.24, [button('decelCruise', False)], True))
 
 
 class TestC11Commands(unittest.TestCase):
@@ -245,12 +276,15 @@ class TestC11Commands(unittest.TestCase):
       self.assertEqual(new[1], old[1])
       self.assertEqual((new[0], new[2]), (0x37F, 1))
 
-  def test_no_acc_active_resume_pulse(self):
+  def test_acc_active_resume_pulse_for_both_allocators(self):
     controller = make_controller(flags=CAR.CHEVROLET_VOLT.config.flags, auto_resume=True)
     state, control = make_state(standstill=True, cruise_standstill=True), make_control()
     control.actuators.accel = 1.
     for allocator in (controller.update_ascm_longitudinal, controller.update_legacy_longitudinal):
-      self.assertTrue(allocator(control.as_reader(), state, 0)[0][1][0] & 1)
+      self.assertFalse(allocator(control.as_reader(), state, 0)[0][1][0] & 1)
+      state.cruise_standstill = False
+      self.assertTrue(allocator(control.as_reader(), state, 1)[0][1][0] & 1)
+      state.cruise_standstill = True
 
 
 class TestC11Integration(unittest.TestCase):
@@ -331,7 +365,7 @@ class TestC11Integration(unittest.TestCase):
 
     cp = CarInterface.get_params(CAR.CHEVROLET_VOLT, gen_empty_fingerprint(), [], False, False, False)
     self.assertTrue(cp.safetyConfigs[0].safetyParam & GMSafetyFlags.ASCM_C11)
-    self.assertFalse(cp.autoResumeSng)
+    self.assertTrue(cp.autoResumeSng)
     ci = CarInterface(cp)
     with patch('opendbc.car.gm.interface.time.monotonic', return_value=1.):
       ci.update([])  # register the signals the dynamic parser consumes
@@ -340,7 +374,8 @@ class TestC11Integration(unittest.TestCase):
     def update(seq, buttons=1, owner=Owner.UNSELECTED, main=True, run=True, peer_owner=None):
       now = int((1. + seq * .04) * 1e9) * 1e-9
       fields = {'ECMEngineStatus': {'CruiseMainOn': main}, 'BCMGeneralPlatformStatus': {'SystemPowerMode': 2 if run else 0},
-                'ASCMSteeringButton': {'ACCButtons': buttons}, 'HPCMAxleTorqueLimits': {'AxleTorqueMin': -650}}
+                'ASCMSteeringButton': {'ACCButtons': buttons}, 'HPCMAxleTorqueLimits': {'AxleTorqueMin': -650},
+                'AcceleratorPedal2': {'CruiseState': AccState.STANDSTILL}}
       messages = [packer.make_can_msg(st.name, 0, fields.get(st.name, {})) for st in ci.can_parsers[Bus.pt].message_states.values()]
       messages += [(0x37D, report(1, seq, owner=owner), 1), (0x37C, report(2, seq, owner=owner if peer_owner is None else peer_owner), 2)]
       with patch('opendbc.car.gm.interface.time.monotonic', return_value=now):
@@ -354,6 +389,8 @@ class TestC11Integration(unittest.TestCase):
     ret = update(7, owner=Owner.OPENPILOT)
     self.assertTrue(ret.buttonEnable, (ret.to_dict(), ci.CS.ascm.__dict__))
     self.assertTrue(ret.ascmReady)
+    self.assertTrue(ci.CS.cruise_standstill)
+    self.assertFalse(ret.cruiseState.standstill)  # Let longcontrol launch without a driver RESUME.
     self.assertFalse(update(8, owner=Owner.OPENPILOT).buttonEnable)
     self.assertFalse(update(9, owner=Owner.OPENPILOT, main=False).ascmReady)
     self.assertFalse(update(10, owner=Owner.OPENPILOT, run=False).ascmReady)
@@ -434,10 +471,10 @@ class TestC11Engagement(unittest.TestCase):
     for seq in range(3):
       feed(self.state.ascm, seq, (1_000_000_000 + seq * 40_000_000) * 1e-9)
 
-  def step(self, seq, active=True):
+  def step(self, seq, forwarding_permitted=True):
     now_nanos = 1_000_000_000 + seq * 40_000_000
     if seq > 2:
-      feed(self.state.ascm, seq, now_nanos * 1e-9, active=active)
+      feed(self.state.ascm, seq, now_nanos * 1e-9, forwarding_permitted=forwarding_permitted)
     self.controller.frame = seq * 4
     _, messages = self.controller.update(self.control.as_reader(), self.state, now_nanos)
     return bool(next(m[1][0] & 1 for m in messages if m[0] == 0x2CB))
@@ -477,10 +514,21 @@ class TestC11Engagement(unittest.TestCase):
     self.control.enabled = True
     self.assertTrue(self.step(4))
 
-  def test_cancel_flag_does_not_reset_active_confirmation_watchdog(self):
+  def test_cancel_flag_cannot_bypass_forwarding_permission(self):
     self.assertTrue(self.step(2))
     for seq in range(3, 9):
       self.control.cruiseControl.cancel = bool(seq % 2)
-      self.step(seq, active=False)
+      self.assertFalse(self.step(seq, forwarding_permitted=False))
     self.assertFalse(self.controller.c11_engaged)
-    self.assertEqual(self.state.ascm.reason, 'ASCM active forwarding not confirmed')
+    self.assertEqual(self.state.ascm.reason, 'Waiting for both ASCM forwarding permissions')
+
+  def test_permission_recovers_between_control_ticks_without_rearming(self):
+    self.assertTrue(self.step(2))
+    # Even if permission loss and full requalification arrive in one CAN batch,
+    # the epoch records that interruption and the enabled controller must release.
+    feed(self.state.ascm, 3, 1.12, forwarding_permitted=False)
+    for seq in range(4, 7):
+      feed(self.state.ascm, seq, 1. + seq * .04)
+    self.assertTrue(self.state.ascm.permitted(1.24))
+    self.assertFalse(self.step(6))
+    self.assertFalse(self.controller.c11_engaged)

@@ -14,6 +14,7 @@ from opendbc.car.gm.values import CAR, DBC, LongOwner
 from openpilot.cereal import log
 from openpilot.selfdrive.car.car_events import CarEvents
 from openpilot.selfdrive.controls.controlsd import Controls
+from openpilot.selfdrive.controls.lib.latcontrol_steer import LatControlSteer
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.selfdrived.state import StateMachine
 from openpilot.selfdrive.selfdrived.events import ET
@@ -42,6 +43,7 @@ class TestC11ControlPipeline(unittest.TestCase):
     # Bypass process/socket initialization; publish() and message schemas remain real.
     self.controls = Controls.__new__(Controls)
     self.controls.CP = self.cp
+    self.controls.LaC = LatControlSteer(self.cp, CarInterface(self.cp), .01)
     self.controls.curvature = self.controls.desired_curvature = 0.
     self.controls.calibrated_pose = None
     self.controls.pm = Mock()
@@ -60,7 +62,7 @@ class TestC11ControlPipeline(unittest.TestCase):
     now_nanos = 1_000_000_000 + 40_000_000 * self.seq
     if self.seq > 2:
       feed(self.state.ascm, self.seq, now_nanos * 1e-9, forwarding_permitted=forwarding_permitted)
-    self.controls.publish(self.control, log.ControlsState.LateralPIDState())
+    self.controls.publish(self.control, log.ControlsState.LateralTorqueState())
     self.controller.frame = self.seq * 4
     _, messages = self.controller.update(self.control.as_reader(), self.state, now_nanos)
     # Model successful TX loopback. ASCM reports below are fixtures, not an ECU simulation.

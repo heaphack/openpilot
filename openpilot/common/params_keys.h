@@ -85,6 +85,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LiveTorqueParameters", {PERSISTENT | DONT_LOG, BYTES}},
     {"LocationFilterInitialState", {PERSISTENT, BYTES}},
     {"LateralManeuverMode", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
+    {"LateralDriverModel", {PERSISTENT, BOOL}},
+    {"LateralTorqueBaseline", {PERSISTENT, BOOL}},
+    // live LatControlSteer overrides on a tuning drive (tools/lateral_tune.py); every drive starts on the shipped values
+    {"LateralTune", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},
     {"LongitudinalManeuverMode", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"LongitudinalPersonality", {PERSISTENT, INT, std::to_string(static_cast<int>(cereal::LongitudinalPersonality::STANDARD))}},
     {"NavigationEnabled", {PERSISTENT, BOOL, "0"}},

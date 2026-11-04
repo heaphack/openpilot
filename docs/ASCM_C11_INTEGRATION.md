@@ -320,3 +320,67 @@ substitutions described above. Status/ECM reports and TX echoes are test fixture
 these tests do not execute ASCM firmware or prove the physical ECM response to
 the pulse. Full application startup, paired ASCM bench testing and vehicle
 validation remain outstanding. No firmware was flashed or code deployed.
+
+## Hewers lateral controller port
+
+Branch `ascm-c11-integration-hewers-lateral` starts at
+`ascm-c11-integration` commit `6b2b6ab1849227fd58bf97689402539ff15616c1`.
+The lateral changes are selectively ported from hewers' work:
+
+- `hewers/openpilot`, branch `lateral`, commit
+  `ad1e224a3c905b5f29b4abe505b8b62126281243`: `LatControlSteer`, controlsd
+  selection/yaw input/limiting feedback, parameter keys, tuning tool and tests.
+- Its pinned `hewers/opendbc` commit
+  `cd56ad1b4cbec8e8403b03d573f907141db5dd71`: only the Volt changes in
+  `gm/interface.py` and `gm/values.py`. The submodule's unrelated upstream
+  changes and safety refactors are not part of this port.
+
+The 2017–18 Volt now uses hewers' steering-column feedforward with lateral
+acceleration feedback and yaw-rate correction. The selected source's gains and
+column model are preserved, including KI 0.15 and slope gain 0.7. Volt CarParams
+select torque tuning, steering ratio 16.5, the GM baseline steering delay 0.1 s,
+and the fitted nonlinear baseline torque curve/offset. The previous Volt PID
+feedforward is removed. Other cars retain their existing controller selection.
+
+`LateralTorqueBaseline` defaults to false. Setting it true before controlsd starts
+selects hewers' torque baseline, not the previous angle PID. `LateralDriverModel`
+also defaults to false; when enabled before controlsd starts, the column controller
+uses his optional driver-torque model. `LateralTune` supports his bounded live
+adjustments via `python openpilot/tools/lateral_tune.py`; changes blend over two
+seconds and clear at manager startup or the offroad transition. These settings
+have no new UI controls. Persistent baseline/driver-model settings survive those
+transitions. The controller reports `torqueState` with hewers' version markers.
+
+ASCM ownership/forwarding supervision, command buses/counters, steering torque
+and rate limits, longitudinal allocation, pedal behavior and auto resume are
+retained. Steering remains at the existing 30 ms active cadence in both source
+trees. Hewers' 0.03 s limiter-feedback tolerance is preserved; its source comment
+about every-other-frame transmission does not describe the pinned sender.
+Physical response through the patched ASCM still needs vehicle validation.
+
+The tracked `prebuilt` marker is removed so normal startup runs SCons before
+starting manager. The new parameter keys require recompiling the native parameter
+library; running the old prebuilt binaries would not register them. This is a
+source port, not a refreshed set of device binaries. Panda safety source and
+existing firmware artifacts are unchanged.
+
+Local validation:
+
+- GM and all car-interface tests: **328 passed, 109 subtests passed**.
+- Compiled GM and diagnostic safety tests: **290 passed, 145 skipped,
+  466 subtests passed**.
+- Hewers lateral tests, new integration coverage, ASCM application tests and
+  native parameter tests: **49 passed, 13 subtests passed**. Coverage includes
+  actual controlsd initialization/selection, parameter persistence/clearing,
+  torque-state publication, nonzero controller output through the ASCM sender
+  and compiled Panda checks, and sender withdrawal on lost ASCM readiness.
+- Ruff and `git diff --check` pass.
+
+Host validation used a newly compiled x86 parameter library with these keys and
+the existing host IPC extension, without replacing tracked ARM binaries. The
+runner substitutes the calibration/model process imports with their actual
+constants (MIN_SPEED_FILTER and LAT_SMOOTH_SECONDS); the tested controller,
+parameter storage, schemas, sender and safety code are real. Test support is in
+`/tmp/hewers-lateral-tests-7zvo208q/`. Full device builds/startup, closed-loop
+vehicle performance and physical ASCM steering response were not validated.
+No deployment, flashing or vehicle operation was performed.

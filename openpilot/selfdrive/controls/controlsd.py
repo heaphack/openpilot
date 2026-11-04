@@ -18,6 +18,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
 from openpilot.selfdrive.controls.lib.latcontrol_curvature import LatControlCurvature
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
+from openpilot.selfdrive.controls.lib.latcontrol_steer import LatControlSteer, STEER_MODELS
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
@@ -57,10 +58,28 @@ class Controls:
       self.LaC = LatControlAngle(self.CP, self.CI, DT_CTRL)
     elif self.CP.steerControlType == car.CarParams.SteerControlType.curvature:
       self.LaC = LatControlCurvature(self.CP, self.CI, DT_CTRL)
+    elif self.CP.carFingerprint in STEER_MODELS and not self.params.get_bool("LateralTorqueBaseline"):
+      # LateralTorqueBaseline runs these cars on LatControlTorque instead, same build and car params, for A/B drives
+      # LateralDriverModel: the driver's torque is part of the plant model, instead of capping the feedback against them
+      self.LaC = LatControlSteer(self.CP, self.CI, DT_CTRL, driver_model=self.params.get_bool("LateralDriverModel"))
     elif self.CP.lateralTuning.which() == 'pid':
       self.LaC = LatControlPID(self.CP, self.CI, DT_CTRL)
     elif self.CP.lateralTuning.which() == 'torque':
       self.LaC = LatControlTorque(self.CP, self.CI, DT_CTRL)
+    self.lateral_tune = None  # LateralTune as LatControlSteer last got it
+
+  def update_lateral_tune(self):
+    """LateralTune: live overrides of LatControlSteer's knobs on a tuning drive (tools/lateral_tune.py). Each change is
+    logged for the drive's analysis. A value that can't be read is no tune (the shipped values), and nothing here stops
+    controlsd: an error is logged, and the last tune stays"""
+    try:
+      tune = self.params.get("LateralTune") or {}
+      if tune != self.lateral_tune:
+        applied = self.LaC.set_tune(tune if isinstance(tune, dict) else {})
+        self.lateral_tune = tune
+        cloudlog.event("lateral_tune", requested=tune, applied=applied)
+    except Exception:
+      cloudlog.exception("lateral_tune: ignored")
 
   def update(self):
     self.sm.update(15)
@@ -69,6 +88,13 @@ class Controls:
     if self.sm.updated["deviceMotion"]:
       device_motion = Pose.from_device_motion(self.sm['deviceMotion'])
       self.calibrated_pose = self.pose_calibrator.build_calibrated_pose(device_motion)
+    if isinstance(self.LaC, LatControlSteer):
+      # calibrated frame is forward-right-down, the controller wants left positive. Without a valid, live gyro the
+      # yaw correction holds rather than chasing the last reading
+      gyro_ok = self.sm.valid['deviceMotion'] and self.calibrated_pose is not None
+      self.LaC.update_yaw_rate(-self.calibrated_pose.angular_velocity.yaw if gyro_ok else None)
+      if self.sm.frame % round(1. / DT_CTRL) == 0:
+        self.update_lateral_tune()
 
   def state_control(self):
     CS = self.sm['carState']
@@ -181,6 +207,8 @@ class Controls:
       if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
         self.steer_limited_by_safety = abs(CC.actuators.steeringAngleDeg - CO.actuatorsOutput.steeringAngleDeg) > \
                                               STEER_ANGLE_SATURATION_THRESHOLD
+      elif isinstance(self.LaC, LatControlSteer):
+        self.steer_limited_by_safety = abs(CC.actuators.torque - CO.actuatorsOutput.torque) > self.LaC.steer_limited_threshold(CS.vEgo)
       else:
         self.steer_limited_by_safety = abs(CC.actuators.torque - CO.actuatorsOutput.torque) > 1e-2
 

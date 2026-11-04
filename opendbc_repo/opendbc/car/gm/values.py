@@ -229,7 +229,7 @@ class CAR(Platforms):
   )
   CHEVROLET_VOLT = GMASCMPlatformConfig(
     [GMCarDocs("Chevrolet Volt 2017-18", min_enable_speed=0, video="https://youtu.be/QeMCN_4TFfQ")],
-    GMCarSpecs(wheelbase=2.69, steerRatio=17.7, centerToFrontRatio=0.45, tireStiffnessFactor=0.469),
+    GMCarSpecs(wheelbase=2.69, steerRatio=16.5, centerToFrontRatio=0.45, tireStiffnessFactor=0.469),
     flags=GMFlags.ASCM_LONG | GMFlags.ASCM_INTERCEPTOR | GMFlags.ASCM_C11,
   )
   CADILLAC_ATS = GMASCMPlatformConfig(

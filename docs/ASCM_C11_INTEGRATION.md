@@ -358,11 +358,11 @@ trees. Hewers' 0.03 s limiter-feedback tolerance is preserved; its source commen
 about every-other-frame transmission does not describe the pinned sender.
 Physical response through the patched ASCM still needs vehicle validation.
 
-The tracked `prebuilt` marker is removed so normal startup runs SCons before
-starting manager. The new parameter keys require recompiling the native parameter
-library; running the old prebuilt binaries would not register them. This is a
-source port, not a refreshed set of device binaries. Panda safety source and
-existing firmware artifacts are unchanged.
+The tracked `prebuilt` marker is retained and the ARM64 parameter library is
+rebuilt with the three new tuning keys. The first port commit incorrectly removed
+the marker: this release checkout omits ONNX model sources, so a full startup
+build fails. See the packaging correction below. Panda safety source and existing
+firmware artifacts are unchanged.
 
 Local validation:
 
@@ -384,3 +384,38 @@ parameter storage, schemas, sender and safety code are real. Test support is in
 `/tmp/hewers-lateral-tests-7zvo208q/`. Full device builds/startup, closed-loop
 vehicle performance and physical ASCM steering response were not validated.
 No deployment, flashing or vehicle operation was performed.
+
+### Prebuilt packaging correction — 2026-11-04
+
+The device reported a full-build failure because
+`openpilot/selfdrive/modeld/models/dmonitoring_model.onnx` is absent. This release
+checkout carries compiled models, not their ONNX sources. Removing `prebuilt`
+in `86eb522ab` was incorrect for that packaging. The accompanying PWD warning
+was not the fatal error.
+
+Restore the empty `prebuilt` marker and replace only
+`openpilot/common/libparams_c.so` with an ARM64 build of the existing source plus
+hewers' registered keys. Startup again uses the shipped binaries and compiled
+models. No SCons workaround, model download, new lateral logic, or Panda change
+is introduced. The old parameter library alone would reject the new key names.
+
+The replacement is built from source revision `86eb522ab` using GCC 12.4 for
+AArch64, C++17, `-D__COMMA_HARDWARE__`, `-mcpu=cortex-a57`, and warnings treated
+as errors. JSON11 and ZeroMQ are statically linked from the pinned ARM64
+`comma-deps` post103 wheels. Cap'n Proto 1.0.1.post103 supplies headers.
+The highest GLIBC and GLIBCXX symbol versions remain 2.38 and 3.4.30, respectively,
+matching the prior library's requirements. No host x86 library is shipped.
+Library SHA256: `7de293ba8669e6e9b5452809c54e70c61e872151d16cce892097f880413318cc`.
+
+Both the previous and new ARM64 libraries were loaded and exercised under
+QEMU AArch64. Existing key names, types and defaults match exactly; the only
+additions are `LateralDriverModel` (BOOL), `LateralTorqueBaseline` (BOOL), and
+`LateralTune` (JSON). Blocking read/write, persistent boolean retention, and
+clearing the JSON setting on manager startup and offroad transitions pass.
+This checks the actual shipped ARM64 artifact, not just a host rebuild.
+
+Build commands, compiler/dependency/source hashes, ARM smoke-test source/binary,
+outputs and replacement library are saved in
+`~/volt_logs/hewers_lateral_build_2026-11-04/`. See `manifest.json` for the exact
+artifact SHA256 and build inputs. No device startup or vehicle behavior is
+claimed validated by the emulator, and no device was flashed or modified here.

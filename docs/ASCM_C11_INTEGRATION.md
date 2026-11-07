@@ -1,6 +1,9 @@
 # Volt ASCM own-v1 integration on c11 transport
 
-Branch base: `nightly-chestnut-10-19-26`, `203b977c79df4bd83a999f6c31644f2b72437524`.
+Original branch base: `nightly-chestnut-10-19-26`, `203b977c79df4bd83a999f6c31644f2b72437524`.
+Latest nightly update: `ascm-c11-integration-hewers-lateral-11-5-26` incorporates
+`commaai/openpilot:nightly-chestnut` at `836afe1bce0c053a8e0a5c12c03f18def75c6a5f`
+(November 6, 2026). See the update notes below for packaging and validation.
 Current contract: `ASCM/shadow_180_dev/OWNERSHIP_FORWARDING_V1_HANDOFF.txt` and
 `protocol/status_v2_ownership/DECODING.txt` in that directory. These supersede the
 engagement-latch and status-bit semantics in the original
@@ -419,3 +422,64 @@ outputs and replacement library are saved in
 `~/volt_logs/hewers_lateral_build_2026-11-04/`. See `manifest.json` for the exact
 artifact SHA256 and build inputs. No device startup or vehicle behavior is
 claimed validated by the emulator, and no device was flashed or modified here.
+
+## Nightly update — 2026-11-06
+
+Branch `ascm-c11-integration-hewers-lateral-11-5-26` starts from the working
+integration at `1da16d25a` and incorporates the latest fetched nightly,
+`836afe1bce0c053a8e0a5c12c03f18def75c6a5f`, published November 6 at 09:06:26 UTC.
+The branch name retains the requested November 5 suffix. Nightly releases have
+unrelated flattened histories, so the merge used `git merge-tree --write-tree`
+with the original release `2eae8186d1d4913cda16163e7cf3bc14d1481824` as its explicit
+base. Source merge `a0a40df1c48581b5d9f55fea31afcc8703c5ca77` records both parents;
+the following packaging commit supplies matching custom binaries.
+
+All upstream changes are incorporated, including the AGNOS requirement change
+from 19.9 to 20.3, the new native messaging implementation, model artifacts,
+longitudinal planner updates, and Panda self-tests/safety bookkeeping changes.
+The ASCM supervisor, GM controller, pedal handling, auto resume, hewers lateral
+controller and controlsd integration are byte-identical to the working branch.
+The existing custom GM safety changes remain; upstream's const RX-check arrays
+and shared RX state are retained.
+
+Upstream now assigns event 105 to `startupCruiseCanceled`, colliding with the
+previous custom ASCM event. Preserve upstream 105 and assign `ascmUnavailable`
+to 106 and `ascmOemOwned` to 107. Existing tests load the merged schema and exercise
+both ASCM alert paths. Historical logs from the previous branch must be decoded
+with that branch's schema: its ASCM events used 105/106.
+
+The empty `prebuilt` marker remains. The ARM64 parameter library is rebuilt from
+the merged source with upstream's current key flags and Unix-datagram logging,
+plus the three lateral tuning keys. Both Panda H7 and body firmware and debug
+bootstubs are rebuilt with the pinned GCC 13.2.1 toolchain. The firmware uses the
+new upstream CRC32 trailer and has version `DEV-a0a40df1-DEBUG`; signatures and
+CRC32 values were verified locally. No ASCM firmware change is part of this update.
+
+Selected artifact SHA256 values:
+
+- `openpilot/common/libparams_c.so`:
+  `47da73162c1431765b289cdb4617db30edc4da225d1deb660f05c23a2aeb46fb`
+- `panda/board/obj/panda_h7.bin.signed`:
+  `e57cef5f420e187303efeb7232e7c2dfa25e898a4c4747537e924a7e68011e00`
+- `panda/board/obj/bootstub.panda_h7.bin`:
+  `72a2575da264a385a79456d0fef59c9e82191a2d099976e5ba7f21533a57db2f`
+
+Validation:
+
+- GM, car-interface, fingerprinting, GM/signed-brake/ELM327 safety tests:
+  **638 passed, 293 skipped, 8,572 subtests passed**.
+- Lateral controller, ASCM application/integration and parameter tests:
+  **49 passed, 13 subtests passed**.
+- Actual packaged ARM64 parameter library under QEMU: latest upstream key names,
+  types and defaults preserved, exactly the three lateral keys added; read/write,
+  boolean persistence and temporary-tune clearing passed.
+- Custom Python Ruff checks, shell syntax and the custom diff's whitespace checks
+  passed. Upstream generated-file whitespace is preserved as fetched.
+
+Application tests use newly compiled host native messaging and parameter libraries
+from the merged source. As before, unused calibration/model process imports are
+substituted with their actual constants; controller, schema, messaging, sender and
+safety behavior under test are real. These checks do not validate full device
+startup, the AGNOS update, or on-road behavior. No device was flashed or modified.
+Build commands, source/artifact hashes, QEMU output and test logs are saved in
+`~/volt_logs/nightly_merge_2026-11-06/`, including `manifest.json`.

@@ -184,7 +184,7 @@ class CarState(CarStateBase):
                               {1: ButtonType.gapAdjustCruise})
       ]
 
-    if ret.vEgo < self.CP.minSteerSpeed:
+    if self.CP.minSteerSpeed > 0. and ret.vEgo < self.CP.minSteerSpeed:
       ret.lowSpeedAlert = True
 
     if self.CP.flags & GMFlags.ASCM_C11:

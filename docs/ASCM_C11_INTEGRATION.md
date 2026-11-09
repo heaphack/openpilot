@@ -499,6 +499,8 @@ at `01b3e5794`. Patch set `06-volt-4nm-steering` is exported in
   curve scales by 3/4 so its existing physical calibration remains the same.
   Raising the ceiling does not multiply unsaturated torque requests by 4/3.
 - Volt `minSteerSpeed` is zero, removing its 7 mph cutoff and low-speed alert.
+  GM only raises the low-speed alert for a positive minimum. This prevents a
+  slightly negative filtered speed at a stop from producing "Below 0 mph".
   Shared controlsd standstill gating remains: steering is inactive at or below
   0.3 m/s or when CarState reports standstill. Initial engagement's separate
   minimum speed is unchanged.
@@ -536,3 +538,10 @@ Panda app SHA256: `9e309dafceef7143736c37555963c5f2fef8875b3e578499522a915c7aee3
 Panda bootstub SHA256: `1798be00928bd3d3495ae8241b1203f9ce8942785632e58b31cfce43caeb4bc0`.
 Build logs, test results and full artifact hashes are in
 `~/volt_logs/gold_volt_2026-11-09/`. No device startup or vehicle testing was performed.
+
+The follow-up zero-minimum alert guard is patch 0003 in set 06. Its regression
+test reproduces speed-filter undershoot from packed wheel-speed CAN messages;
+the previous code fails that test. All GM car tests pass with the guard:
+**76 passed, 113 subtests passed**, including positive-minimum alert clearing
+and temporary/permanent EPS fault reporting at zero speed. Ruff and whitespace
+checks passed. This Python-only fix requires no Panda rebuild.

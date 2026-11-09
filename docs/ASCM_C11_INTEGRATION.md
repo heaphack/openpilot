@@ -517,3 +517,22 @@ This changes the requested openpilot/Panda envelope. It does not modify ASCM or
 EPS firmware and does not establish physical EPS acceptance or performance at
 4 Nm or low speed. Rebuilt Panda artifacts accompany the source patch on this
 prebuilt branch; `prebuilt`, the parameter library and model files are retained.
+
+Gold build validation:
+
+- GM Panda safety, including the new 4 Nm variant: **317 passed, 142 skipped,
+  532 subtests passed**.
+- GM car tests, all car interfaces, firmware fingerprinting, signed-brake and
+  diagnostic safety: **356 passed, 155 skipped, 8,106 subtests passed**.
+- Lateral/ASCM application and parameter tests: **53 passed, 20 subtests passed**.
+- Ruff and `git diff --check` passed. Host application tests use the saved native
+  IPC/parameter libraries from the unchanged nightly base and the same limited
+  process-import substitutions described above.
+
+Panda and body apps/bootstubs were rebuilt with pinned GCC 13.2.1.post103 from
+applied source commit `4fc1f23fcae4c8822922ce80b6e090e0fa26d636`, with version
+`DEV-4fc1f23f-DEBUG`. Both app signatures, CRC32 footers and lengths were checked.
+Panda app SHA256: `9e309dafceef7143736c37555963c5f2fef8875b3e578499522a915c7aee3eb6`.
+Panda bootstub SHA256: `1798be00928bd3d3495ae8241b1203f9ce8942785632e58b31cfce43caeb4bc0`.
+Build logs, test results and full artifact hashes are in
+`~/volt_logs/gold_volt_2026-11-09/`. No device startup or vehicle testing was performed.

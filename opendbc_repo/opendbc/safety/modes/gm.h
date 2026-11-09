@@ -29,6 +29,7 @@ typedef enum {
 static GmHardware gm_hw = GM_ASCM;
 static bool gm_pcm_cruise = false;
 static bool gm_c11 = false;
+static bool gm_volt_4nm = false;
 
 static void gm_rx_hook(const CANPacket_t *msg) {
   const int GM_STANDSTILL_THRSLD = 10;  // 0.311kph
@@ -93,7 +94,7 @@ static void gm_rx_hook(const CANPacket_t *msg) {
 
 static bool gm_tx_hook(const CANPacket_t *msg) {
   const TorqueSteeringLimits GM_STEERING_LIMITS = {
-    .max_torque = 300,
+    .max_torque = gm_volt_4nm ? 400 : 300,
     .max_rate_up = 10,
     .max_rate_down = 15,
     .driver_torque_allowance = 65,
@@ -159,7 +160,9 @@ static safety_config gm_init(uint16_t param) {
   const uint16_t GM_PARAM_EV = 4;
   const uint16_t GM_PARAM_ASCM_INTERCEPTOR = 8;
   const uint16_t GM_PARAM_ASCM_C11 = 16;
+  const uint16_t GM_PARAM_VOLT_4NM = 32;
   gm_c11 = GET_FLAG(param, GM_PARAM_ASCM_C11);
+  gm_volt_4nm = GET_FLAG(param, GM_PARAM_VOLT_4NM);
 
   // common safety checks assume unscaled integer values
   static const int GM_GAS_TO_CAN = 8;  // 1 / 0.125

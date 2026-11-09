@@ -19,7 +19,8 @@ NON_LINEAR_TORQUE_PARAMS = {
   CAR.CHEVROLET_BOLT_EUV: [2.6531724862969748, 1.0, 0.1919764879840985, 0.009054123646805178],
   CAR.GMC_ACADIA: [4.78003305, 1.0, 0.3122, 0.05591772],
   CAR.CHEVROLET_SILVERADO: [3.29974374, 1.0, 0.25571356, 0.0465122],
-  CAR.CHEVROLET_VOLT: [1.75, 1.0, 0.191, 0.053],
+  # Preserve the baseline's physical torque curve when full-scale changes from 3 to 4 Nm.
+  CAR.CHEVROLET_VOLT: [1.75, 1.0 * 3 / 4, 0.191 * 3 / 4, 0.053 * 3 / 4],
 }
 
 
@@ -173,6 +174,8 @@ class CarInterface(CarInterfaceBase):
     ret.longitudinalActuatorDelay = 0.5  # large delay to initially start braking
 
     if candidate == CAR.CHEVROLET_VOLT:
+      ret.minSteerSpeed = 0.
+      ret.safetyConfigs[0].safetyParam |= GMSafetyFlags.VOLT_4NM.value
       # Patched ASCMs require own-v1 firmware, which permits the ACCActive resume pulse.
       ret.autoResumeSng = ret.openpilotLongitudinalControl
 

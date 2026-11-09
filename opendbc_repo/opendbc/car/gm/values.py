@@ -12,7 +12,7 @@ Ecu = CarParams.Ecu
 
 
 class CarControllerParams:
-  STEER_MAX = 300  # GM limit is 3Nm. Used by carcontroller to generate LKA output
+  STEER_MAX = 300  # Default GM limit: 3 Nm (100 CAN counts/Nm).
   STEER_STEP = 3  # Active control frames per command (~33hz)
   INACTIVE_STEER_STEP = 10  # Inactive control frames per command (10hz)
   STEER_DELTA_UP = 10  # Delta rates require review due to observed EPS weakness
@@ -63,6 +63,8 @@ class CarControllerParams:
   EBCM_ACCEL_SAFETY_MAX = 2.
 
   def __init__(self, CP):
+    if CP.carFingerprint == CAR.CHEVROLET_VOLT:
+      self.STEER_MAX = 400  # Volt: 4 Nm, paired with GMSafetyFlags.VOLT_4NM.
     # Axle torque command safety limits (Nm), shared by both allocation paths.
     if CP.carFingerprint in (CAMERA_ACC_CAR | SDGM_CAR):
       self.AXLE_TORQUE_SAFETY_MAX = 1346.0
@@ -171,6 +173,7 @@ class GMSafetyFlags(IntFlag):
   EV = 4
   ASCM_INTERCEPTOR = 8
   ASCM_C11 = 16
+  VOLT_4NM = 32
 
 
 class Footnote(Enum):

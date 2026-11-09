@@ -324,5 +324,21 @@ class TestGmC11Safety(TestGmAscmInterceptorSafety):
     self.assertFalse(self.safety.get_relay_malfunction())
 
 
+class TestGmVoltC11Safety(TestGmC11Safety):
+  EXTRA_SAFETY_PARAM = TestGmC11Safety.EXTRA_SAFETY_PARAM | GMSafetyFlags.VOLT_4NM
+  MAX_TORQUE_LOOKUP = [0], [400]
+
+  def test_volt_limit_resets_with_safety_parameter(self):
+    for extra, limit in ((GMSafetyFlags.VOLT_4NM, 400), (0, 300), (GMSafetyFlags.VOLT_4NM, 400)):
+      param = TestGmC11Safety.EXTRA_SAFETY_PARAM | GMSafetyFlags.ASCM_INTERCEPTOR | extra
+      self.safety.set_safety_hooks(CarParams.SafetyModel.gm, param)
+      self.safety.init_tests()
+      for sign in (-1, 1):
+        for torque, allowed in ((limit, True), (limit + 1, False)):
+          self.safety.set_controls_allowed(True)
+          self._set_prev_torque(sign * limit)
+          self.assertEqual(self._tx(self._torque_cmd_msg(sign * torque)), allowed)
+
+
 if __name__ == "__main__":
   unittest.main()

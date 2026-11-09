@@ -1,4 +1,5 @@
 import math
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -21,7 +22,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle
 from openpilot.selfdrive.controls.lib.latcontrol_curvature import LatControlCurvature
 from openpilot.selfdrive.controls.lib.latcontrol_torque import KP_INTERP
-from openpilot.selfdrive.controls.lib.latcontrol_steer import KP_SCALE
+from openpilot.selfdrive.controls.lib.latcontrol_steer import FEEDBACK_NM_PER_ACCEL, KP_SCALE
 from openpilot.selfdrive.controls.lib.latcontrol_steer import DRIVER_STEER_HOLD, DRIVER_TORQUE_FRICTION, FRICTION_RATE_WIDTH, LatControlSteer, \
   SLOPE_GAIN, SLOPE_SCALE_MIN, STEER_LIMITED_LAG, TANH_SLEW_SHARE, TUNE_RAMP, TUNED_VERSION_BIT, YAW_CORRECTION_MAX, shipped_tune
 from openpilot.selfdrive.controls.controlsd import Controls
@@ -93,12 +94,31 @@ class TestLatControl(OpenpilotTestCase):
     controller = LatControlSteer(CP.as_reader(), CarInterface(CP), DT_CTRL)
     CS = car.CarState.new_message()
     CS.vEgo = 12
-    CS.steeringAngleDeg = math.degrees(VM.get_steer_from_curvature(0.045, CS.vEgo, 0.))  # asked for 0.05 (left)
-    params = log.VehicleParameters.new_message()
+    # Adverse road roll makes the feedforward exceed even the new 4 Nm budget.
+    params = log.VehicleParameters.new_message(roll=0.1)
+    CS.steeringAngleDeg = math.degrees(VM.get_steer_from_curvature(0.045, CS.vEgo, params.roll))  # asked for 0.05 (left)
     for _ in range(500):
       output, _, lac_log = controller.update(True, CS, VM, params, False, -0.05, False, 0.2)
     assert output == controller.steer_max and lac_log.saturated
     assert abs(controller.pid.i) < 0.05
+
+  def test_four_nm_preserves_unsaturated_physical_torque(self):
+    CarInterface = interfaces[GM.CHEVROLET_VOLT]
+    CP = CarInterface.get_non_essential_params(GM.CHEVROLET_VOLT)
+    VM = VehicleModel(CP)
+    new = LatControlSteer(CP.as_reader(), CarInterface(CP), DT_CTRL)
+    old = LatControlSteer(CP.as_reader(), CarInterface(CP), DT_CTRL)
+    old.model = replace(old.model, steer_max_nm=3.)
+    old.pid.set_limits(3. / FEEDBACK_NM_PER_ACCEL, -3. / FEEDBACK_NM_PER_ACCEL)
+    params = log.VehicleParameters.new_message()
+    for speed in (1., 10., 30.):
+      CS = car.CarState.new_message(vEgo=speed)
+      for curvature in (-.0002, 0., .0002):
+        for _ in range(100):
+          before, _, _ = old.update(True, CS, VM, params, False, curvature, False, .1)
+          after, _, _ = new.update(True, CS, VM, params, False, curvature, False, .1)
+          assert abs(before) < .95
+          assert abs(before * 3. - after * 4.) < 1e-9
 
   def test_steer_tanh_terms_slew_limited(self):
     # a step in the planned curvature at highway speed: the centering and friction terms follow at their share of the

@@ -483,3 +483,37 @@ safety behavior under test are real. These checks do not validate full device
 startup, the AGNOS update, or on-road behavior. No device was flashed or modified.
 Build commands, source/artifact hashes, QEMU output and test logs are saved in
 `~/volt_logs/nightly_merge_2026-11-06/`, including `manifest.json`.
+
+## Gold Volt steering limits — 2026-11-09
+
+`gold-volt-11-5-26` starts from `ascm-c11-integration-hewers-lateral-11-5-26`
+at `01b3e5794`. Patch set `06-volt-4nm-steering` is exported in
+`~/github.com/heaphack/volt-patches/` for this flattened checkout.
+
+- The Volt sender's maximum request is 400 CAN counts (4 Nm), with a matching
+  Panda maximum selected by the new `GMSafetyFlags.VOLT_4NM` bit 32. Only the
+  Volt interface selects it; existing GM configurations without this bit keep
+  300 counts. The normal c11 Volt safety parameter is now 60 (4 | 8 | 16 | 32).
+- Hewers' column model normalizes its physical torque output by 4 Nm, including
+  its PID output budget. The optional baseline controller's normalized torque
+  curve scales by 3/4 so its existing physical calibration remains the same.
+  Raising the ceiling does not multiply unsaturated torque requests by 4/3.
+- Volt `minSteerSpeed` is zero, removing its 7 mph cutoff and low-speed alert.
+  Shared controlsd standstill gating remains: steering is inactive at or below
+  0.3 m/s or when CarState reports standstill. Initial engagement's separate
+  minimum speed is unchanged.
+- Torque slew limits (10 up / 15 down counts per message), real-time delta
+  limit (128 counts), driver torque allowance/multiplier, cadence, ASCM
+  authorization, pedal behavior and longitudinal logic are unchanged.
+
+The tests exercise both directions through controlsd, the actual sender and
+compiled Panda safety; raw CAN torque matches the 400-count normalization.
+They cover low-speed activation and standstill inhibition, the 400/401 boundary,
+returning to the 300-count configuration, driver/rate/disabled safety checks,
+and physical torque equivalence below saturation. The saturation/anti-windup
+fixture now includes adverse road roll so its request exceeds the 4 Nm ceiling.
+
+This changes the requested openpilot/Panda envelope. It does not modify ASCM or
+EPS firmware and does not establish physical EPS acceptance or performance at
+4 Nm or low speed. Rebuilt Panda artifacts accompany the source patch on this
+prebuilt branch; `prebuilt`, the parameter library and model files are retained.

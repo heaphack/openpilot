@@ -577,3 +577,20 @@ The source and matching Panda apps/bootstubs are exported as patch set
 previous firmware. Keep `prebuilt` for this release checkout. Local validation
 artifacts are in `~/volt_logs/gold_volt_5nm_2026-11-10/`. This change establishes
 software limits, not physical EPS acceptance of 5 Nm; no vehicle test was run.
+
+5 Nm build validation:
+
+- GM Panda safety: **317 passed, 142 skipped, 532 subtests passed**.
+- GM car/interface/fingerprint and signed-brake/diagnostic safety:
+  **359 passed, 155 skipped, 8,110 subtests passed**.
+- Lateral controller, ASCM application/integration and torque-buffer tests:
+  **41 passed, 20 subtests passed**.
+- Ruff and whitespace checks passed. Host application tests use the same native
+  IPC/parameter libraries and limited process-import substitutions documented above.
+
+Both Panda and body apps/bootstubs were rebuilt with GCC 13.2.1 from source
+commit `faaccec12c6fbe8f8c138521c7e966bbd9b1336d`, with firmware version
+`DEV-faaccec1-DEBUG`. Both debug RSA signatures, CRC32 footers, length fields,
+embedded versions and ELF-to-binary correspondence were verified. Artifact
+hashes and reproducible verification are recorded in the local manifest and
+`verify_firmware.py`. The packaged parameter library and model files are unchanged.

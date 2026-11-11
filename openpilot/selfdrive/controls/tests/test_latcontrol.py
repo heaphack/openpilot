@@ -94,22 +94,22 @@ class TestLatControl(OpenpilotTestCase):
     controller = LatControlSteer(CP.as_reader(), CarInterface(CP), DT_CTRL)
     CS = car.CarState.new_message()
     CS.vEgo = 12
-    # Adverse road roll makes the feedforward exceed even the new 4 Nm budget.
-    params = log.VehicleParameters.new_message(roll=0.1)
+    # Adverse road roll makes the feedforward exceed the 5 Nm budget.
+    params = log.VehicleParameters.new_message(roll=0.2)
     CS.steeringAngleDeg = math.degrees(VM.get_steer_from_curvature(0.045, CS.vEgo, params.roll))  # asked for 0.05 (left)
     for _ in range(500):
       output, _, lac_log = controller.update(True, CS, VM, params, False, -0.05, False, 0.2)
     assert output == controller.steer_max and lac_log.saturated
     assert abs(controller.pid.i) < 0.05
 
-  def test_four_nm_preserves_unsaturated_physical_torque(self):
+  def test_five_nm_preserves_unsaturated_physical_torque(self):
     CarInterface = interfaces[GM.CHEVROLET_VOLT]
     CP = CarInterface.get_non_essential_params(GM.CHEVROLET_VOLT)
     VM = VehicleModel(CP)
     new = LatControlSteer(CP.as_reader(), CarInterface(CP), DT_CTRL)
     old = LatControlSteer(CP.as_reader(), CarInterface(CP), DT_CTRL)
-    old.model = replace(old.model, steer_max_nm=3.)
-    old.pid.set_limits(3. / FEEDBACK_NM_PER_ACCEL, -3. / FEEDBACK_NM_PER_ACCEL)
+    old.model = replace(old.model, steer_max_nm=4.)
+    old.pid.set_limits(4. / FEEDBACK_NM_PER_ACCEL, -4. / FEEDBACK_NM_PER_ACCEL)
     params = log.VehicleParameters.new_message()
     for speed in (1., 10., 30.):
       CS = car.CarState.new_message(vEgo=speed)
@@ -118,7 +118,7 @@ class TestLatControl(OpenpilotTestCase):
           before, _, _ = old.update(True, CS, VM, params, False, curvature, False, .1)
           after, _, _ = new.update(True, CS, VM, params, False, curvature, False, .1)
           assert abs(before) < .95
-          assert abs(before * 3. - after * 4.) < 1e-9
+          assert abs(before * 4. - after * 5.) < 1e-9
 
   def test_steer_tanh_terms_slew_limited(self):
     # a step in the planned curvature at highway speed: the centering and friction terms follow at their share of the
@@ -314,7 +314,9 @@ class TestLatControl(OpenpilotTestCase):
     assert lac_log.version == TUNED_VERSION_BIT
     steps = np.abs(np.diff(first + second))
     # both push right (the car is left of the plan): the torque moved a lot, a little at a time
-    assert first[0] - second[-1] > 0.15 and max(steps) < 0.003
+    # Check the same physical change and per-frame smoothness regardless of full-scale normalization.
+    assert (first[0] - second[-1]) * controller.model.steer_max_nm > 0.6
+    assert max(steps) * controller.model.steer_max_nm < 0.012
 
     assert controller.set_tune({}) == {}
     _, lac_log = run(2 * half)

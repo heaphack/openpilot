@@ -64,7 +64,7 @@ class CarControllerParams:
 
   def __init__(self, CP):
     if CP.carFingerprint == CAR.CHEVROLET_VOLT:
-      self.STEER_MAX = 400  # Volt: 4 Nm, paired with GMSafetyFlags.VOLT_4NM.
+      self.STEER_MAX = 500  # Volt: 5 Nm, paired with GMSafetyFlags.VOLT_5NM.
     # Axle torque command safety limits (Nm), shared by both allocation paths.
     if CP.carFingerprint in (CAMERA_ACC_CAR | SDGM_CAR):
       self.AXLE_TORQUE_SAFETY_MAX = 1346.0
@@ -173,7 +173,7 @@ class GMSafetyFlags(IntFlag):
   EV = 4
   ASCM_INTERCEPTOR = 8
   ASCM_C11 = 16
-  VOLT_4NM = 32
+  VOLT_5NM = 32
 
 
 class Footnote(Enum):

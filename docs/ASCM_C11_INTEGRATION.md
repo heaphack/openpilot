@@ -545,3 +545,35 @@ the previous code fails that test. All GM car tests pass with the guard:
 **76 passed, 113 subtests passed**, including positive-minimum alert clearing
 and temporary/permanent EPS fault reporting at zero speed. Ruff and whitespace
 checks passed. This Python-only fix requires no Panda rebuild.
+
+## Gold Volt 5 Nm steering limit — 2026-11-10
+
+The follow-up to `a458a3623` raises the Volt's requested steering ceiling from
+4 to 5 Nm in the sender, Panda safety and Hewers' column controller. The sender
+uses 500 CAN counts; safety parameter bit 32 is now named `VOLT_5NM` and selects
+500 counts in the matching rebuilt firmware. The complete c11 Volt parameter
+remains 60. Other GM configurations retain their 300-count default.
+
+Hewers' normalization, PID output budget, feedforward logging and command-limit
+detection all use the 5 Nm model maximum. Its physical torque response below
+saturation is preserved. The optional baseline's coefficients use 3/5 scaling;
+its inverse lookup extends to ±7 m/s² so it covers both full-scale torque limits
+without changing the physical calibration. Regression tests cover that inverse
+mapping and compare Hewers' unsaturated physical output against the 4 Nm version.
+
+The zero minimum steering speed and positive-minimum warning guard remain.
+Slew limits, driver override, ASCM session handling, longitudinal behavior and
+standstill inhibition are unchanged. No ASCM or EPS firmware is modified.
+
+Validation covers ±500 counts through controlsd, the sender and compiled Panda,
+rejection at ±501, resetting to the default 300-count safety configuration,
+normal torque/rate/driver/disengagement checks, baseline selection, tune blending
+and saturation anti-windup. The anti-windup test uses a stronger synthetic road
+roll to exceed the new ceiling; tune-blending checks use physical Nm units.
+
+The source and matching Panda apps/bootstubs are exported as patch set
+`07-volt-5nm-steering` in `~/github.com/heaphack/volt-patches/`, applied after set
+06. Use the source and packaged firmware together: bit 32 selected 4 Nm in the
+previous firmware. Keep `prebuilt` for this release checkout. Local validation
+artifacts are in `~/volt_logs/gold_volt_5nm_2026-11-10/`. This change establishes
+software limits, not physical EPS acceptance of 5 Nm; no vehicle test was run.

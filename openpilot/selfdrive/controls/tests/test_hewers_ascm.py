@@ -74,8 +74,8 @@ class TestHewersAscm(OpenpilotTestCase):
       cp = CarInterface.get_params(candidate, gen_empty_fingerprint(), [], False, False, False)
       params = CarControllerParams(cp)
       volt = candidate == CAR.CHEVROLET_VOLT
-      self.assertEqual(params.STEER_MAX, 400 if volt else 300)
-      self.assertEqual(bool(cp.safetyConfigs[0].safetyParam & GMSafetyFlags.VOLT_4NM), volt)
+      self.assertEqual(params.STEER_MAX, 500 if volt else 300)
+      self.assertEqual(bool(cp.safetyConfigs[0].safetyParam & GMSafetyFlags.VOLT_5NM), volt)
       if volt:
         self.assertEqual(cp.minSteerSpeed, 0.)
         self.assertFalse(cp.steerAtStandstill)
@@ -86,8 +86,12 @@ class TestHewersAscm(OpenpilotTestCase):
           # Original 3 Nm calibration must request the same physical torque below saturation.
           original = math.copysign(1 / (1 + math.exp(-abs(1.75 * accel))) - .5, accel) + .191 * accel + .053
           torque = to_torque(accel, cp.lateralTuning.torque)
-          self.assertAlmostEqual(torque * 400, original * 300, places=5)
+          self.assertAlmostEqual(torque * 500, original * 300, places=5)
           self.assertAlmostEqual(from_torque(torque, cp.lateralTuning.torque), accel, places=5)
+        for torque in (-1., -.8, 0., .8, 1.):
+          # Inverse lookup must cover both full-scale limits, not clamp at its old acceleration endpoints.
+          accel = from_torque(torque, cp.lateralTuning.torque)
+          self.assertAlmostEqual(to_torque(accel, cp.lateralTuning.torque), torque, places=5)
 
   def test_controlsd_to_ascm_sender_and_panda(self):
     torque = self.run_controlsd_to_ascm_sender_and_panda(20., -.003)
@@ -102,7 +106,7 @@ class TestHewersAscm(OpenpilotTestCase):
         else:
           self.assertTrue(any(abs(t) > 0. for t in torque))
 
-  def test_four_nm_reaches_sender_and_panda_in_both_directions(self):
+  def test_five_nm_reaches_sender_and_panda_in_both_directions(self):
     for direction in (-1, 1):
       with self.subTest(direction=direction):
         torque = self.run_controlsd_to_ascm_sender_and_panda(10., -.05 * direction, active_frames=300)
@@ -167,7 +171,7 @@ class TestHewersAscm(OpenpilotTestCase):
         if address == 0x180:
           raw_torque = int.from_bytes(data[:2], 'big') & 0x7FF
           raw_torque -= 0x800 if raw_torque & 0x400 else 0
-          self.assertEqual(raw_torque, round(actuators.torque * 400))
+          self.assertEqual(raw_torque, round(actuators.torque * 500))
           state.loopback_lka_steering_cmd_updated = True
           state.loopback_lka_steering_cmd_counter = (data[0] >> 4) & 3
           state.loopback_lka_steering_cmd_ts_nanos = now_nanos

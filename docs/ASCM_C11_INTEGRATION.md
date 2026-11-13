@@ -622,3 +622,17 @@ Patch set `08-volt-6nm-steering` in `~/github.com/heaphack/volt-patches/` follow
 set 07. Local test/build evidence is in `~/volt_logs/gold_volt_6nm_2026-11-13/`.
 This changes software limits; physical EPS acceptance at 6 Nm and device startup
 have not been tested.
+
+6 Nm validation: **317 GM safety tests passed** (142 skipped, 532 subtests),
+**359 GM car/interface/fingerprint and diagnostic/signed-brake tests passed**
+(155 skipped, 8,110 subtests), and **41 application tests passed** (20 subtests).
+Ruff and whitespace checks passed. Application tests use the saved native host
+IPC/parameter libraries and the same unused-process import substitutions as the
+5 Nm validation.
+
+Both Panda and body apps/bootstubs were rebuilt with GCC 13.2.1 from source
+commit `b1da44a92be9ea45956855e912e3cd8e4676d4de`, firmware version
+`DEV-b1da44a9-DEBUG`. Both debug RSA signatures, CRC32 footers, length fields,
+embedded versions and ELF-to-binary correspondence were verified. Source and
+artifact hashes are recorded in the local manifest alongside the verification
+script. No device was flashed or vehicle-tested during this work.

@@ -594,3 +594,31 @@ commit `faaccec12c6fbe8f8c138521c7e966bbd9b1336d`, with firmware version
 embedded versions and ELF-to-binary correspondence were verified. Artifact
 hashes and reproducible verification are recorded in the local manifest and
 `verify_firmware.py`. The packaged parameter library and model files are unchanged.
+
+## Gold Volt 6 Nm steering limit — 2026-11-13
+
+The follow-up to `575230ae7` raises the same Volt steering limits from 5 to 6 Nm:
+the sender uses 600 CAN counts, Panda accepts up to 600 with safety bit 32
+(`VOLT_6NM`), and Hewers' model maximum is 6 Nm. The complete c11 Volt safety
+parameter remains 60; other GM configurations retain their 300-count default.
+Hewers' normalization, PID budget, feedforward logging and command-limit detection
+derive from that maximum. Unsaturated physical torque is preserved against the
+5 Nm controller.
+
+The optional baseline coefficients use 3/6 normalization with the same physical
+torque curve. Its inverse lookup extends to ±9 m/s² to cover both full-scale
+torque limits; this does not change planner acceleration limits. Regression
+tests cover the full inverse mapping, ±600 through controlsd/sender/Panda,
+rejection at ±601, reset to the default limit, and saturation anti-windup using
+a stronger synthetic road-roll input.
+
+The zero-speed warning guard, standstill inhibition, steering slew/driver limits,
+ASCM supervision and longitudinal behavior are retained. The source and rebuilt
+Panda firmware must be used together: previous bit-32 firmware limits to 5 Nm.
+No ASCM/EPS firmware changes are included. Keep `prebuilt`; model files and the
+parameter library are retained.
+
+Patch set `08-volt-6nm-steering` in `~/github.com/heaphack/volt-patches/` follows
+set 07. Local test/build evidence is in `~/volt_logs/gold_volt_6nm_2026-11-13/`.
+This changes software limits; physical EPS acceptance at 6 Nm and device startup
+have not been tested.

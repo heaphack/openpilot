@@ -124,7 +124,7 @@ class ColumnModel:
 # tick)
 STEER_MODELS = {
   "CHEVROLET_VOLT": ColumnModel(k_la=1.10, a_s=3.0, k_roll=1.10, c=-0.644, Kc=0.605, wc=5.0, thc=-0.5, b=0.0, Fc=0.364,
-                                 steer_max_nm=5.0, eps_slew_bp=(16.68, 50.03), eps_slew_v=(8.0, 2.4)),
+                                 steer_max_nm=6.0, eps_slew_bp=(16.68, 50.03), eps_slew_v=(8.0, 2.4)),
 }
 
 

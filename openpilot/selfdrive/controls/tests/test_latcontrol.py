@@ -94,22 +94,22 @@ class TestLatControl(OpenpilotTestCase):
     controller = LatControlSteer(CP.as_reader(), CarInterface(CP), DT_CTRL)
     CS = car.CarState.new_message()
     CS.vEgo = 12
-    # Adverse road roll makes the feedforward exceed the 5 Nm budget.
-    params = log.VehicleParameters.new_message(roll=0.2)
+    # Adverse road roll makes the feedforward exceed the 6 Nm budget.
+    params = log.VehicleParameters.new_message(roll=0.3)
     CS.steeringAngleDeg = math.degrees(VM.get_steer_from_curvature(0.045, CS.vEgo, params.roll))  # asked for 0.05 (left)
     for _ in range(500):
       output, _, lac_log = controller.update(True, CS, VM, params, False, -0.05, False, 0.2)
     assert output == controller.steer_max and lac_log.saturated
     assert abs(controller.pid.i) < 0.05
 
-  def test_five_nm_preserves_unsaturated_physical_torque(self):
+  def test_six_nm_preserves_unsaturated_physical_torque(self):
     CarInterface = interfaces[GM.CHEVROLET_VOLT]
     CP = CarInterface.get_non_essential_params(GM.CHEVROLET_VOLT)
     VM = VehicleModel(CP)
     new = LatControlSteer(CP.as_reader(), CarInterface(CP), DT_CTRL)
     old = LatControlSteer(CP.as_reader(), CarInterface(CP), DT_CTRL)
-    old.model = replace(old.model, steer_max_nm=4.)
-    old.pid.set_limits(4. / FEEDBACK_NM_PER_ACCEL, -4. / FEEDBACK_NM_PER_ACCEL)
+    old.model = replace(old.model, steer_max_nm=5.)
+    old.pid.set_limits(5. / FEEDBACK_NM_PER_ACCEL, -5. / FEEDBACK_NM_PER_ACCEL)
     params = log.VehicleParameters.new_message()
     for speed in (1., 10., 30.):
       CS = car.CarState.new_message(vEgo=speed)
@@ -118,7 +118,7 @@ class TestLatControl(OpenpilotTestCase):
           before, _, _ = old.update(True, CS, VM, params, False, curvature, False, .1)
           after, _, _ = new.update(True, CS, VM, params, False, curvature, False, .1)
           assert abs(before) < .95
-          assert abs(before * 4. - after * 5.) < 1e-9
+          assert abs(before * 5. - after * 6.) < 1e-9
 
   def test_steer_tanh_terms_slew_limited(self):
     # a step in the planned curvature at highway speed: the centering and friction terms follow at their share of the

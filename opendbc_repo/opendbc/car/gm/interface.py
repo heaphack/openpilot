@@ -19,8 +19,8 @@ NON_LINEAR_TORQUE_PARAMS = {
   CAR.CHEVROLET_BOLT_EUV: [2.6531724862969748, 1.0, 0.1919764879840985, 0.009054123646805178],
   CAR.GMC_ACADIA: [4.78003305, 1.0, 0.3122, 0.05591772],
   CAR.CHEVROLET_SILVERADO: [3.29974374, 1.0, 0.25571356, 0.0465122],
-  # Preserve the baseline's physical torque curve when full-scale changes from 3 to 5 Nm.
-  CAR.CHEVROLET_VOLT: [1.75, 1.0 * 3 / 5, 0.191 * 3 / 5, 0.053 * 3 / 5],
+  # Preserve the baseline's physical torque curve when full-scale changes from 3 to 6 Nm.
+  CAR.CHEVROLET_VOLT: [1.75, 1.0 * 3 / 6, 0.191 * 3 / 6, 0.053 * 3 / 6],
 }
 
 
@@ -73,8 +73,8 @@ class CarInterface(CarInterfaceBase):
       steer_torque = (sig * b) + (lateral_acceleration * c) + d
       return float(steer_torque)
 
-    # The Volt's inverse lookup must span the full 5 Nm budget without changing its physical torque curve.
-    max_lat_accel = 7.0 if self.CP.carFingerprint == CAR.CHEVROLET_VOLT else 5.0
+    # The Volt's inverse lookup must span the full 6 Nm budget without changing its physical torque curve.
+    max_lat_accel = 9.0 if self.CP.carFingerprint == CAR.CHEVROLET_VOLT else 5.0
     lataccel_values = np.arange(-max_lat_accel, max_lat_accel, 0.01)
     torque_values = [torque_from_lateral_accel_siglin_func(x) for x in lataccel_values]
     assert min(torque_values) < -1 and max(torque_values) > 1, "The torque values should cover the range [-1, 1]"
@@ -177,7 +177,7 @@ class CarInterface(CarInterfaceBase):
 
     if candidate == CAR.CHEVROLET_VOLT:
       ret.minSteerSpeed = 0.
-      ret.safetyConfigs[0].safetyParam |= GMSafetyFlags.VOLT_5NM.value
+      ret.safetyConfigs[0].safetyParam |= GMSafetyFlags.VOLT_6NM.value
       # Patched ASCMs require own-v1 firmware, which permits the ACCActive resume pulse.
       ret.autoResumeSng = ret.openpilotLongitudinalControl
 

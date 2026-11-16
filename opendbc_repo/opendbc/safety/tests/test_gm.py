@@ -325,11 +325,11 @@ class TestGmC11Safety(TestGmAscmInterceptorSafety):
 
 
 class TestGmVoltC11Safety(TestGmC11Safety):
-  EXTRA_SAFETY_PARAM = TestGmC11Safety.EXTRA_SAFETY_PARAM | GMSafetyFlags.VOLT_6NM
-  MAX_TORQUE_LOOKUP = [0], [600]
+  EXTRA_SAFETY_PARAM = TestGmC11Safety.EXTRA_SAFETY_PARAM | GMSafetyFlags.VOLT_4NM
+  MAX_TORQUE_LOOKUP = [0], [400]
 
   def test_volt_limit_resets_with_safety_parameter(self):
-    for extra, limit in ((GMSafetyFlags.VOLT_6NM, 600), (0, 300), (GMSafetyFlags.VOLT_6NM, 600)):
+    for extra, limit in ((GMSafetyFlags.VOLT_4NM, 400), (0, 300), (GMSafetyFlags.VOLT_4NM, 400)):
       param = TestGmC11Safety.EXTRA_SAFETY_PARAM | GMSafetyFlags.ASCM_INTERCEPTOR | extra
       self.safety.set_safety_hooks(CarParams.SafetyModel.gm, param)
       self.safety.init_tests()

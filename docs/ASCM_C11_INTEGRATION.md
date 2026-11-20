@@ -590,9 +590,23 @@ Validation:
   and driver overrides at 2 to 20 Nm/s, and check that other GM cars keep
   33 Hz and 10/15. Ruff and `git diff --check` passed.
 
-**This commit does not rebuild Panda firmware.** The tracked firmware still
-enforces 10, 15 and 128 and rejects the new sender's larger steps. Do not
-install this revision until the firmware is rebuilt from it.
+The source commit `273d3965f` does not include firmware: its tracked firmware
+still enforces 10, 15 and 128 and rejects the new sender's larger steps. Do not
+install that revision alone. The following commit supplies the firmware.
 
-Not validated: vehicle behavior, EPS response to the faster rate, and whether
-the loopback on the device arrives within the 10 ms gap needed for 50 Hz.
+Panda and body apps/bootstubs were rebuilt with pinned GCC 13.2.1.post103 from
+source commit `273d3965fbf5ce3588305702f3bdcaaf29221121`, with version
+`DEV-273d3965-DEBUG`. Both app signatures, CRC32 footers, lengths and the
+ELF-to-binary match were checked. The build environment was first checked by
+rebuilding `4fc1f23fc` in a separate clone: both signed apps, both raw apps and
+both bootstubs came out byte-identical to the tracked 4 Nm firmware. In the new
+Panda app `gm_tx_hook` grows from 404 to 412 bytes and loads the new limits.
+Panda app SHA256: `7077831052adb9e6a75b225ec4b31c66cb9c1b3b1829aea450853aec22bbde8a`.
+Panda bootstub SHA256: `755a203c0b432712fcd51665232fea1d09ca03ecf83bf125c575744b9241856d`.
+Build logs, test results and full artifact hashes are in
+`~/volt_logs/gold_volt_50hz_2026-11-20/`. `prebuilt`, the parameter library and
+model files are retained.
+
+Not validated: device startup, vehicle behavior, EPS response to the faster
+rate, and whether the loopback on the device arrives within the 10 ms gap
+needed for 50 Hz.

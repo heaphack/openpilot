@@ -93,13 +93,17 @@ static void gm_rx_hook(const CANPacket_t *msg) {
 }
 
 static bool gm_tx_hook(const CANPacket_t *msg) {
+  // Volt (GM_PARAM_VOLT_4NM) commands at 50 Hz with a speed-scheduled rise that peaks at 8 Nm/s, 16 counts per
+  // command (CarControllerParams.VOLT_STEER_SLEW_V). Panda has no vehicle speed here, so it guards the peak only.
+  // max_rate_down is the least the command must fall per message while the driver overrides; the sender falls by
+  // this much then (STEER_DELTA_DOWN_OVERRIDE) and by its speed schedule otherwise. max_rt_delta: 13 commands can land in one 250 ms window (208), plus two commands of margin.
   const TorqueSteeringLimits GM_STEERING_LIMITS = {
     .max_torque = gm_volt_4nm ? 400 : 300,
-    .max_rate_up = 10,
-    .max_rate_down = 15,
+    .max_rate_up = gm_volt_4nm ? 16 : 10,
+    .max_rate_down = gm_volt_4nm ? 16 : 15,
     .driver_torque_allowance = 65,
     .driver_torque_multiplier = 4,
-    .max_rt_delta = 128,
+    .max_rt_delta = gm_volt_4nm ? 240 : 128,
     .type = TorqueDriverLimited,
   };
 

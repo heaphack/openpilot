@@ -1,12 +1,20 @@
+import math
 import unittest
 
+import numpy as np
+
 from opendbc.can import CANPacker
-from opendbc.car import Bus, gen_empty_fingerprint
+from opendbc.car import DT_CTRL, Bus, gen_empty_fingerprint, structs
 from opendbc.car.common.conversions import Conversions as CV
+from opendbc.car.gm.ascm import AscmSupervisor
+from opendbc.car.gm.carcontroller import CarController
 from opendbc.car.gm.carstate import CarState
 from opendbc.car.gm.fingerprints import FINGERPRINTS
 from opendbc.car.gm.interface import CarInterface
-from opendbc.car.gm.values import CAR, CAMERA_ACC_CAR, DBC, GM_RX_OFFSET
+from opendbc.car.gm.tests.test_ascm import feed
+from opendbc.car.gm.tests.test_volt_longitudinal import make_control, make_controller, make_state
+from opendbc.car.gm.values import CAR, CAMERA_ACC_CAR, DBC, GM_RX_OFFSET, CarControllerParams
+from opendbc.safety.tests.libsafety.libsafety_py import libsafety, make_CANPacket
 from opendbc.testing import parameterized
 
 CAMERA_DIAGNOSTIC_ADDRESS = 0x24b
@@ -73,3 +81,100 @@ class TestGMLowSpeedAlert(unittest.TestCase):
         self.assertFalse(state.lowSpeedAlert)
         self.assertEqual(state.steerFaultTemporary, status == 2)
         self.assertEqual(state.steerFaultPermanent, status == 3)
+
+
+class TestVoltSteerCommand(unittest.TestCase):
+  # openpilot sees its own steering command on the bus about 8 ms after sending it (hewers/opendbc 9b7efe7)
+  LOOPBACK_DELAY_NS = 8_000_000
+
+  def send_rate(self, car):
+    """Steering commands per second while steering, with each loopback arriving LOOPBACK_DELAY_NS after its send."""
+    controller = make_controller(car)
+    state = make_state(speed=20.)
+    control = make_control()
+    control.latActive = True
+    control.actuators.torque = 0.1
+    control = control.as_reader()
+    loopbacks, sends, frames = [], 0, 1000
+    for frame in range(frames):
+      now = frame * round(DT_CTRL * 1e9)
+      arrived = [t for t in loopbacks if t <= now]
+      loopbacks = [t for t in loopbacks if t > now]
+      state.loopback_lka_steering_cmd_updated = len(arrived) > 0
+      if arrived:
+        state.loopback_lka_steering_cmd_ts_nanos = arrived[-1]
+      _, messages = controller.update(control, state, now)
+      if any(message[0] == 0x180 for message in messages):
+        sends += 1
+        loopbacks.append(now + self.LOOPBACK_DELAY_NS)
+    return sends / (frames * DT_CTRL)
+
+  def test_volt_commands_at_50hz(self):
+    self.assertAlmostEqual(self.send_rate(CAR.CHEVROLET_VOLT), 50., delta=1.)
+
+  def test_other_ascm_cars_stay_at_33hz(self):
+    self.assertAlmostEqual(self.send_rate(CAR.GMC_ACADIA), 100. / 3, delta=1.)
+
+  def test_volt_rate_limits(self):
+    # hewers' schedule, 8.0 -> 2.4 Nm/s, the same up and down, as counts per 50 Hz command rounded up
+    params = CarControllerParams(CarInterface.get_non_essential_params(CAR.CHEVROLET_VOLT))
+    self.assertEqual((params.STEER_STEP, params.STEER_MAX, params.STEER_DELTA_DOWN_OVERRIDE), (2, 400, 16))
+    for v_ego, counts, nm_per_s in ((10., 16, 8.0), (16.68, 16, 8.0), (29.06, 12, 5.92), (50.03, 5, 2.4), (60., 5, 2.4)):
+      for bp, v in ((params.STEER_DELTA_UP_BP, params.STEER_DELTA_UP_V), (params.STEER_DELTA_DOWN_BP, params.STEER_DELTA_DOWN_V)):
+        step = np.interp(v_ego, bp, v)
+        self.assertAlmostEqual(step / 100. / (params.STEER_STEP * DT_CTRL), nm_per_s, delta=0.01)
+        self.assertEqual(math.ceil(step), counts)
+
+  def test_other_gm_rate_limits_are_unchanged(self):
+    params = CarControllerParams(CarInterface.get_non_essential_params(CAR.GMC_ACADIA))
+    self.assertEqual((params.STEER_STEP, params.STEER_MAX), (3, 300))
+    self.assertEqual((params.STEER_DELTA_UP_V, params.STEER_DELTA_DOWN_V, params.STEER_DELTA_DOWN_OVERRIDE), ([10], [15], None))
+
+  def test_c11_sender_through_panda(self):
+    # The Volt's c11 sender into compiled Panda at its own safety parameter: full torque, then the driver pushes
+    # against it at 5 Nm/s. Every message must be accepted, and the command must release at Panda's max_rate_down.
+    cp = CarInterface.get_params(CAR.CHEVROLET_VOLT, gen_empty_fingerprint(), [], False, False, False)
+    packer = CANPacker(DBC[CAR.CHEVROLET_VOLT][Bus.pt])
+    for speed, rise_step in ((10., 16), (29.06, 12)):
+      for direction in (-1, 1):
+        with self.subTest(speed=speed, direction=direction):
+          sender = CarController(DBC[CAR.CHEVROLET_VOLT], cp)
+          state = make_state(speed=speed)
+          state.out.canValid = state.out.ascmReady = True
+          state.out.gearShifter = 'drive'
+          state.out.cruiseState.available = state.out.cruiseState.enabled = True
+          state.ascm = AscmSupervisor()
+          for seq in range(3):
+            feed(state.ascm, seq, 1. + seq * .04)
+          libsafety.set_safety_hooks(cp.safetyConfigs[0].safetyModel.raw, cp.safetyConfigs[0].safetyParam)
+          libsafety.init_tests()
+          libsafety.set_controls_allowed(True)
+          control = structs.CarControl.new_message(enabled=True, latActive=True, longActive=True)
+          control.actuators.torque = float(direction)
+          control.actuators.longControlState = "pid"
+          control = control.as_reader()
+          commands, frames = [], []
+          for frame in range(400):
+            libsafety.set_timer(frame * 10_000)
+            now_nanos = 1_080_000_000 + frame * 10_000_000
+            if frame and frame % 4 == 0:
+              feed(state.ascm, 2 + frame // 4, now_nanos * 1e-9)
+            driver_torque = -direction * min(300, max(0, frame - 200) * 5)  # counts
+            state.out.steeringTorque = driver_torque * 0.01
+            address, data, bus = packer.make_can_msg("PSCMStatus", 0, {"LKADriverAppldTrq": driver_torque * 0.01})
+            libsafety.safety_rx_hook(make_CANPacket(address, bus, data))
+            actuators, messages = sender.update(control, state, now_nanos)
+            for address, data, bus in messages:
+              self.assertTrue(libsafety.safety_tx_hook(make_CANPacket(address, bus, data)), (frame, hex(address), data.hex()))
+              if address == 0x180:
+                commands.append(actuators.torqueOutputCan)
+                frames.append(frame)
+                state.loopback_lka_steering_cmd_updated = True
+                state.loopback_lka_steering_cmd_counter = (data[0] >> 4) & 3
+                state.loopback_lka_steering_cmd_ts_nanos = now_nanos
+          steps = [abs(b - a) for a, b in zip(commands, commands[1:], strict=False)]
+          self.assertEqual({b - a for a, b in zip(frames, frames[1:], strict=False)}, {2})
+          self.assertEqual(max(direction * command for command in commands), 400)
+          self.assertEqual(max(steps[:60]), rise_step)
+          self.assertEqual(max(steps[100:]), 16)
+          self.assertEqual(commands[-1], 0)

@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
+import math
 import unittest
 
-from opendbc.car.gm.values import GMSafetyFlags
+import numpy as np
+
+from opendbc.car.gm.interface import CarInterface
+from opendbc.car.gm.values import CAR, CarControllerParams, GMSafetyFlags
+from opendbc.car.lateral import apply_driver_steer_torque_limits
 from opendbc.car.structs import CarParams
 import opendbc.safety.tests.common as common
 from opendbc.safety.tests.common import CANPackerSafety
@@ -327,6 +332,10 @@ class TestGmC11Safety(TestGmAscmInterceptorSafety):
 class TestGmVoltC11Safety(TestGmC11Safety):
   EXTRA_SAFETY_PARAM = TestGmC11Safety.EXTRA_SAFETY_PARAM | GMSafetyFlags.VOLT_4NM
   MAX_TORQUE_LOOKUP = [0], [400]
+  # 8 Nm/s as 16 counts per 50 Hz command; other GM configurations keep 10 / 15 / 128
+  MAX_RATE_UP = 16
+  MAX_RATE_DOWN = 16
+  MAX_RT_DELTA = 240
 
   def test_volt_limit_resets_with_safety_parameter(self):
     for extra, limit in ((GMSafetyFlags.VOLT_4NM, 400), (0, 300), (GMSafetyFlags.VOLT_4NM, 400)):
@@ -338,6 +347,54 @@ class TestGmVoltC11Safety(TestGmC11Safety):
           self.safety.set_controls_allowed(True)
           self._set_prev_torque(sign * limit)
           self.assertEqual(self._tx(self._torque_cmd_msg(sign * torque)), allowed)
+
+  def _sender_through_panda(self, request, driver, v_ego, frames=500, override_step=True):
+    """The Volt's command limiter into Panda, at 100 Hz frames. request and driver give counts for a frame.
+    Returns the commands Panda rejected as (frame, command, previous command, driver torque)."""
+    params = CarControllerParams(CarInterface.get_non_essential_params(CAR.CHEVROLET_VOLT))
+    self.safety.set_controls_allowed(True)
+    self._set_prev_torque(0)
+    last, rejected = 0, []
+    for frame in range(frames):
+      self.safety.set_timer(frame * 10_000)
+      driver_torque = int(driver(frame))
+      self._rx(self._torque_driver_msg(driver_torque))
+      if frame % params.STEER_STEP == 0:
+        delta_up = math.ceil(np.interp(v_ego, params.STEER_DELTA_UP_BP, params.STEER_DELTA_UP_V))
+        delta_down = math.ceil(np.interp(v_ego, params.STEER_DELTA_DOWN_BP, params.STEER_DELTA_DOWN_V))
+        command = apply_driver_steer_torque_limits(int(request(frame)), last, driver_torque * 0.01, params, delta_up=delta_up, delta_down=delta_down,
+                                                   delta_down_override=params.STEER_DELTA_DOWN_OVERRIDE if override_step else None)
+        if not self._tx(self._torque_cmd_msg(command, steer_req=1)):
+          rejected.append((frame, command, last, driver_torque))
+        last = command
+    return rejected
+
+  @staticmethod
+  def _driver_ramp(nm_per_s, sign=1):
+    # driver torque against a command of the given sign, from frame 100, to 3 Nm
+    return lambda frame: -sign * min(300, max(0, frame - 100) * nm_per_s)
+
+  def test_sender_full_swings_are_accepted(self):
+    # the scheduled rise and fall, 8 Nm/s at low speed to 2.4 Nm/s, stay within max_rate_up and max_rt_delta
+    for v_ego in (5., 16.68, 25., 35., 50.03):
+      with self.subTest(v_ego=v_ego):
+        rejected = self._sender_through_panda(lambda frame: 400 if (frame // 150) % 2 == 0 else -400, lambda frame: 0, v_ego, frames=900)
+        self.assertEqual(rejected, [])
+
+  def test_sender_fall_under_driver_override_is_accepted(self):
+    # while the driver overrides, Panda requires the command to fall by at least max_rate_down per message
+    for v_ego in (10., 20.1, 29.06, 35., 50.03):
+      for nm_per_s in (2., 5., 10., 20.):
+        for sign in (-1, 1):
+          for hold in (150, 350):
+            with self.subTest(v_ego=v_ego, nm_per_s=nm_per_s, sign=sign, hold=hold):
+              rejected = self._sender_through_panda(lambda frame, torque=sign * hold: torque, self._driver_ramp(nm_per_s, sign), v_ego)
+              self.assertEqual(rejected, [])
+
+  def test_scheduled_fall_alone_is_rejected_under_driver_override(self):
+    # why STEER_DELTA_DOWN_OVERRIDE exists: above 16.68 m/s the schedule's own fall is smaller than max_rate_down
+    self.assertEqual(self._sender_through_panda(lambda frame: 150, self._driver_ramp(5.), 10., override_step=False), [])
+    self.assertNotEqual(self._sender_through_panda(lambda frame: 150, self._driver_ramp(5.), 29.06, override_step=False), [])
 
 
 if __name__ == "__main__":

@@ -1,9 +1,10 @@
+import math
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum, IntFlag
 
 import numpy as np
 
-from opendbc.car import Bus, PlatformConfig, DbcDict, Platforms, CarSpecs
+from opendbc.car import DT_CTRL, Bus, PlatformConfig, DbcDict, Platforms, CarSpecs
 from opendbc.car.structs import CarParams
 from opendbc.car.docs_definitions import CarDocs, CarFootnote, CarHarness, CarParts, Column
 from opendbc.car.fw_query_definitions import FwQueryConfig, Request, StdQueries
@@ -13,10 +14,20 @@ Ecu = CarParams.Ecu
 
 class CarControllerParams:
   STEER_MAX = 300  # Default GM limit: 3 Nm (100 CAN counts/Nm).
-  STEER_STEP = 3  # Active control frames per command (~33hz)
+  STEER_STEP = 3  # Active control frames per command (~33 Hz); the Volt commands at 50 Hz (__init__)
   INACTIVE_STEER_STEP = 10  # Inactive control frames per command (10hz)
-  STEER_DELTA_UP = 10  # Delta rates require review due to observed EPS weakness
+  STEER_DELTA_UP = 10  # counts per command, flat; the Volt's limits are scheduled by speed (below)
   STEER_DELTA_DOWN = 15
+  STEER_DELTA_UP_BP, STEER_DELTA_UP_V = [0.], [STEER_DELTA_UP]
+  STEER_DELTA_DOWN_BP, STEER_DELTA_DOWN_V = [0.], [STEER_DELTA_DOWN]
+  # Least fall per command while the last command is beyond the driver torque limit. None keeps the fall above.
+  # Needed where that fall can be smaller than Panda's max_rate_down (the Volt's schedule).
+  STEER_DELTA_DOWN_OVERRIDE = None
+  # Volt torque rate limit by speed, from hewers/opendbc 58eef13 and 9b7efe7: counts/s (100 counts/Nm) against m/s,
+  # the same up and down. 8.0 Nm/s up to 16.68 m/s, falling linearly to 2.4 Nm/s at 50.03 m/s. The car controller
+  # rounds the step per command up, so Panda's max_rate_up must be at least the rounded peak (safety/modes/gm.h).
+  VOLT_STEER_SLEW_BP = [16.68, 50.03]
+  VOLT_STEER_SLEW_V = [800., 240.]
   STEER_DRIVER_ALLOWANCE = 65
   STEER_DRIVER_MULTIPLIER = 4
   STEER_DRIVER_FACTOR = 100
@@ -65,6 +76,12 @@ class CarControllerParams:
   def __init__(self, CP):
     if CP.carFingerprint == CAR.CHEVROLET_VOLT:
       self.STEER_MAX = 400  # Volt: 4 Nm, paired with GMSafetyFlags.VOLT_4NM.
+      self.STEER_STEP = 2  # 50 Hz
+      command_period = self.STEER_STEP * DT_CTRL
+      self.STEER_DELTA_UP_BP = self.STEER_DELTA_DOWN_BP = self.VOLT_STEER_SLEW_BP
+      self.STEER_DELTA_UP_V = self.STEER_DELTA_DOWN_V = [round(rate * command_period, 6) for rate in self.VOLT_STEER_SLEW_V]
+      # Panda's max_rate_down (gm.h): the command must fall at least this much per message while the driver overrides
+      self.STEER_DELTA_DOWN_OVERRIDE = math.ceil(max(self.STEER_DELTA_DOWN_V))
     # Axle torque command safety limits (Nm), shared by both allocation paths.
     if CP.carFingerprint in (CAMERA_ACC_CAR | SDGM_CAR):
       self.AXLE_TORQUE_SAFETY_MAX = 1346.0

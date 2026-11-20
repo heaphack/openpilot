@@ -67,10 +67,16 @@ class CurvatureSteeringLimits:
     return float(np.clip(new_apply_curvature, -self.CURVATURE_MAX, self.CURVATURE_MAX))
 
 
-def apply_driver_steer_torque_limits(apply_torque: int, apply_torque_last: int, driver_torque: float, LIMITS, steer_max: int | None = None):
+def apply_driver_steer_torque_limits(apply_torque: int, apply_torque_last: int, driver_torque: float, LIMITS, steer_max: int | None = None,
+                                     delta_up: int | None = None, delta_down: int | None = None,
+                                     delta_down_override: int | None = None):
   # some safety modes utilize a dynamic max steer
   if steer_max is None:
     steer_max = LIMITS.STEER_MAX
+
+  # per-call rate overrides (speed-scheduled slew); default to the fixed LIMITS values
+  delta_up = LIMITS.STEER_DELTA_UP if delta_up is None else delta_up
+  delta_down = LIMITS.STEER_DELTA_DOWN if delta_down is None else delta_down
 
   # limits due to driver torque
   driver_max_torque = steer_max + (LIMITS.STEER_DRIVER_ALLOWANCE + driver_torque * LIMITS.STEER_DRIVER_FACTOR) * LIMITS.STEER_DRIVER_MULTIPLIER
@@ -79,13 +85,18 @@ def apply_driver_steer_torque_limits(apply_torque: int, apply_torque_last: int, 
   min_steer_allowed = min(max(-steer_max, driver_min_torque), 0)
   apply_torque = np.clip(apply_torque, min_steer_allowed, max_steer_allowed)
 
+  # While the last command is beyond what the driver's torque allows, Panda's driver_limit_check requires it to fall
+  # by at least max_rate_down per message. A smaller scheduled fall would be rejected, so use the override step.
+  if delta_down_override is not None and not (min_steer_allowed <= apply_torque_last <= max_steer_allowed):
+    delta_down = max(delta_down, delta_down_override)
+
   # slow rate if steer torque increases in magnitude
   if apply_torque_last > 0:
-    apply_torque = np.clip(apply_torque, max(apply_torque_last - LIMITS.STEER_DELTA_DOWN, -LIMITS.STEER_DELTA_UP),
-                           apply_torque_last + LIMITS.STEER_DELTA_UP)
+    apply_torque = np.clip(apply_torque, max(apply_torque_last - delta_down, -delta_up),
+                           apply_torque_last + delta_up)
   else:
-    apply_torque = np.clip(apply_torque, apply_torque_last - LIMITS.STEER_DELTA_UP,
-                           min(apply_torque_last + LIMITS.STEER_DELTA_DOWN, LIMITS.STEER_DELTA_UP))
+    apply_torque = np.clip(apply_torque, apply_torque_last - delta_up,
+                           min(apply_torque_last + delta_down, delta_up))
 
   return int(round(float(apply_torque)))
 

@@ -44,8 +44,9 @@ counter rather than retrying an old active request.
 Inactive/release commands continue during startup, OEM ownership, disengagement,
 and faults. Passive/dashcam mode sends none. Inactive UI is `010000000100`, gas
 is -650 Nm with active/stop clear, brake is mode 1 with zero request, and steering
-has zero torque and active clear. Gas/brake run at 25 Hz; steering uses the
-existing 30 ms active and 100 ms inactive schedule. The first steering release keeps the active cadence to
+has zero torque and active clear. Gas/brake run at 25 Hz; steering uses a 20 ms
+active schedule on the Volt (30 ms on other GM cars) and a 100 ms inactive schedule.
+The first steering release keeps the active cadence to
 avoid triggering the firmware's 60 ms active-input timeout on disengagement.
 
 ## Ownership and fault handling
@@ -545,3 +546,53 @@ the previous code fails that test. All GM car tests pass with the guard:
 **76 passed, 113 subtests passed**, including positive-minimum alert clearing
 and temporary/permanent EPS fault reporting at zero speed. Ruff and whitespace
 checks passed. This Python-only fix requires no Panda rebuild.
+
+## Volt 50 Hz steering and speed-scheduled torque rate — 2026-11-20
+
+Hewers' column controller on this branch already assumes his sender changes: the
+8.0 to 2.4 Nm/s rate table and commands on every other frame. Those live on his
+opendbc `lka-slew`/`deploy` branches (`58eef13`, `9b7efe7`), not on `lateral`,
+which the port used. This change brings them to the Volt. It supersedes, for
+the Volt only, the statements above that steering stays at the 30 ms cadence
+with 10/15-count slew and a 128-count real-time limit.
+
+- The Volt commands at 50 Hz (`STEER_STEP = 2`). The minimum gap after the last
+  command's loopback is half the command period: 10 ms on the Volt, 15 ms on
+  other GM cars. A fixed 15 ms would hold a 50 Hz sender to about 33 Hz.
+- Rise and fall follow hewers' schedule: 8.0 Nm/s up to 16.68 m/s, falling
+  linearly to 2.4 Nm/s at 50.03 m/s. Per 50 Hz command, rounded up, that is
+  16 counts down to 5.
+- One difference from hewers: while the previous command is beyond the driver
+  torque limit, the fall is at least 16 counts (`STEER_DELTA_DOWN_OVERRIDE`).
+  Panda's `driver_limit_check` requires the command to fall by at least
+  `max_rate_down` per message in that state. With the scheduled fall alone,
+  Panda rejects the command above 16.68 m/s and then every later one until the
+  request returns to zero; a test reproduces this.
+- Panda: `GMSafetyFlags.VOLT_4NM` now also selects `max_rate_up = 16`,
+  `max_rate_down = 16` and `max_rt_delta = 240`. Other GM configurations keep
+  10, 15 and 128, and their sender is unchanged. The Volt safety parameter
+  stays 60. Panda has no vehicle speed in this mode, so it guards only the
+  8 Nm/s peak; above 16.68 m/s the schedule is enforced by openpilot alone.
+- The lateral limits test allows 4.0 m/s^3 of up jerk, as hewers' fork does
+  (upstream 3.0 with tolerance). The Volt's schedule is 3.68 by that method.
+- No openpilot controller code changes.
+
+Validation:
+
+- GM Panda safety: **320 passed, 142 skipped, 617 subtests passed**.
+- GM car tests, all car interfaces, lateral limits and diagnostic safety:
+  **792 passed, 67 skipped, 117 subtests passed**.
+- Lateral/ASCM application tests with the saved host libraries: **40 passed,
+  20 subtests passed**, including controlsd through the c11 sender into
+  compiled Panda in both directions.
+- New tests drive the real sender at 50 Hz with an 8 ms loopback delay, the
+  real limiter and c11 sender into compiled Panda through full-torque swings
+  and driver overrides at 2 to 20 Nm/s, and check that other GM cars keep
+  33 Hz and 10/15. Ruff and `git diff --check` passed.
+
+**This commit does not rebuild Panda firmware.** The tracked firmware still
+enforces 10, 15 and 128 and rejects the new sender's larger steps. Do not
+install this revision until the firmware is rebuilt from it.
+
+Not validated: vehicle behavior, EPS response to the faster rate, and whether
+the loopback on the device arrives within the 10 ms gap needed for 50 Hz.

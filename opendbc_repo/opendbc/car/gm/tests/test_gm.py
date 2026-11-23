@@ -87,8 +87,8 @@ class TestVoltSteerCommand(unittest.TestCase):
   # openpilot sees its own steering command on the bus about 8 ms after sending it (hewers/opendbc 9b7efe7)
   LOOPBACK_DELAY_NS = 8_000_000
 
-  def send_rate(self, car):
-    """Steering commands per second while steering, with each loopback arriving LOOPBACK_DELAY_NS after its send."""
+  def send_rate(self, car, loopback_delay_ns=LOOPBACK_DELAY_NS):
+    """Steering commands per second while steering, with each loopback arriving loopback_delay_ns after its send."""
     controller = make_controller(car)
     state = make_state(speed=20.)
     control = make_control()
@@ -106,14 +106,21 @@ class TestVoltSteerCommand(unittest.TestCase):
       _, messages = controller.update(control, state, now)
       if any(message[0] == 0x180 for message in messages):
         sends += 1
-        loopbacks.append(now + self.LOOPBACK_DELAY_NS)
+        loopbacks.append(now + loopback_delay_ns)
     return sends / (frames * DT_CTRL)
 
   def test_volt_commands_at_50hz(self):
-    self.assertAlmostEqual(self.send_rate(CAR.CHEVROLET_VOLT), 50., delta=1.)
+    # The Volt does not wait on the loopback: one that arrives 12 or 18 ms after its send must not delay the next command
+    for delay_ms in (3, 8, 12, 18):
+      with self.subTest(delay_ms=delay_ms):
+        self.assertAlmostEqual(self.send_rate(CAR.CHEVROLET_VOLT, delay_ms * 1_000_000), 50., delta=1.)
 
   def test_other_ascm_cars_stay_at_33hz(self):
     self.assertAlmostEqual(self.send_rate(CAR.GMC_ACADIA), 100. / 3, delta=1.)
+
+  def test_other_ascm_cars_keep_the_loopback_gate(self):
+    # A loopback 16 ms after its send is 14 ms old at the next due frame, inside the 15 ms gate: the command waits a frame
+    self.assertAlmostEqual(self.send_rate(CAR.GMC_ACADIA, 16_000_000), 25., delta=1.)
 
   def test_volt_rate_limits(self):
     # hewers' schedule, 8.0 -> 2.4 Nm/s, the same up and down, as counts per 50 Hz command rounded up

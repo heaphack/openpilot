@@ -610,3 +610,62 @@ model files are retained.
 Not validated: device startup, vehicle behavior, EPS response to the faster
 rate, and whether the loopback on the device arrives within the 10 ms gap
 needed for 50 Hz.
+
+## Volt steering without the loopback gate — 2026-11-22
+
+The Volt no longer waits for the previous steering command's loopback to age
+before sending the next one. It commands on the frame schedule alone: every
+second 100 Hz frame while steering (50 Hz), every tenth when inactive. This
+applies to the Volt fingerprint (`CAR.CHEVROLET_VOLT`) in every configuration,
+with or without the interceptor harness and c11. Other GM cars, including the
+camera-based 2019 Volt, keep the gate.
+
+The half-period rule added on 2026-11-20 to let the gate pass 50 Hz goes with
+it: the gate is upstream's fixed `MIN_STEER_MSG_INTERVAL_MS = 15` again. This
+supersedes the 2026-11-20 statement that the minimum gap is 10 ms on the Volt.
+Other GM cars send at 33 Hz, where half the period was already 15 ms, so
+nothing changes for them.
+
+Why:
+
+- The gate keeps two commands from reaching a GM EPS too close together.
+  Upstream added it for other GM cars, and the Volt ran without it before
+  then. That history is the owner's finding from the upstream change log. This
+  checkout carries no upstream history, so it was not re-verified here.
+- At 50 Hz the gate cost commands. On route `000000fa` it put 7.1% of due
+  commands off by one frame: 2,101 of 29,460, giving 30 ms gaps and a mean of
+  48.3 Hz. pandad stamps a CAN packet that needs a second SPI read 1 to 3 ms
+  late; when that packet carries the loopback, the loopback reads as under
+  10 ms old at the next due frame.
+- Replaying that drive's logged frame times without the gate
+  (`~/volt_logs/volt_50hz_drives_2026-11-20/scripts/nogate.py`): spacing has a
+  median of 20.0 ms, a 99th percentile of 23.5 ms and a minimum of 10.9 ms, and
+  2 gaps exceed 25 ms where 2,103 did. These are replayed sends, not
+  measurements.
+- On the interceptor harness the EPS does not see openpilot's spacing at all.
+  The ASCM alone transmits to it, and over that drive's seven steering runs its
+  0x180 period on the powertrain bus stayed between 19.99 and 20.00 ms.
+
+Unchanged: the steering counter still advances on the own loopback, and the
+speed-scheduled rate limits and every Panda limit are as before. Nothing but
+the frame count now spaces the Volt's commands. Panda's real-time limit of 240
+counts per 250 ms takes 16 full-step commands in one window to exceed; the
+schedule sends 13.
+
+Validation, on `03c855ea4` with this change alone:
+
+- GM car tests: **82 passed, 121 subtests passed**. All car interfaces, lateral
+  limits, GM Panda safety and diagnostic safety: **1031 passed, 209 skipped,
+  617 subtests passed**. ASCM event, engagement, controller and lateral control
+  tests with the saved host libraries: **40 passed, 20 subtests passed**. Ruff
+  and `git diff --check` passed.
+- The Volt send-rate test now also runs with loopbacks 12 and 18 ms after each
+  send, which the gate held to 33 Hz. A new test holds the Acadia to its 15 ms
+  gate. The shipped c11 sender was also driven once by hand with loopbacks 3 to
+  18 ms after each send: a command on every second frame, consecutive counters.
+
+Python only: no Panda rebuild.
+
+Not validated: device startup and vehicle behavior. A Volt without the
+interceptor harness sends these commands straight to the EPS; that
+configuration was not driven for this change.

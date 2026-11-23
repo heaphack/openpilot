@@ -15,6 +15,8 @@ LongCtrlState = structs.CarControl.Actuators.LongControlState
 
 # Camera cancels up to 0.1s after brake is pressed, ECM allows 0.5s
 CAMERA_CANCEL_DELAY_FRAMES = 10
+# Enforce a minimum interval between steering messages to avoid a fault
+MIN_STEER_MSG_INTERVAL_MS = 15
 
 
 class CarController(CarControllerBase):
@@ -35,9 +37,6 @@ class CarController(CarControllerBase):
     self.lka_icon_status_last = (False, False)
 
     self.params = CarControllerParams(self.CP)
-    # Enforce a minimum interval between steering messages to avoid a fault: half the active command period since the
-    # last command's loopback, 15 ms at ~33 Hz and 10 ms at 50 Hz. A fixed 15 ms would hold a 50 Hz sender to ~33 Hz.
-    self.min_steer_msg_interval_ms = self.params.STEER_STEP * DT_CTRL * 1000. / 2.
 
     # With an ASCM interceptor harness our commands enter on the ASCM's bus and the stock ASCM stays
     # alive, so we neither impersonate it to the radar and ADAS modules nor keep them alive ourselves.
@@ -259,8 +258,11 @@ class CarController(CarControllerBase):
 
     # Avoid GM EPS faults when transmitting messages too close together: skip this transmit if we
     # received the ASCMLKASteeringCmd loopback confirmation too recently
+    # Not on the Volt. It commands at 50 Hz, where waiting for the loopback to age put 7% of commands off by a
+    # frame, and it ran without this gate until upstream added it for other GM cars.
     last_lka_steer_msg_ms = (now_nanos - CS.loopback_lka_steering_cmd_ts_nanos) * 1e-6
-    if (self.frame - self.last_steer_frame) >= steer_step and last_lka_steer_msg_ms > self.min_steer_msg_interval_ms:
+    steer_msg_spaced = self.CP.carFingerprint == CAR.CHEVROLET_VOLT or last_lka_steer_msg_ms > MIN_STEER_MSG_INTERVAL_MS
+    if (self.frame - self.last_steer_frame) >= steer_step and steer_msg_spaced:
       # Initialize ASCMLKASteeringCmd counter using the camera until we get a msg on the bus
       if CS.loopback_lka_steering_cmd_ts_nanos == 0 and not self.c11:
         self.lka_steering_cmd_counter = CS.pt_lka_steering_cmd_counter + 1

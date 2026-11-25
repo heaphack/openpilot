@@ -698,3 +698,31 @@ The source merge must be paired with the following artifact commit before
 installation: the prebuilt branch needs Panda/body apps and debug bootstubs
 rebuilt against this safety API, and an ARM64 parameter library containing
 both upstream's new `Notifications` key and Hewers' three tuning keys.
+
+Completed artifact build and validation:
+
+- Panda and body apps plus their debug bootstubs were rebuilt from source
+  merge `80dcc25a5`, version `DEV-80dcc25a-DEBUG`, with GCC 13.2.1.post103.
+  Both RSA signatures, CRC32 footers, lengths, version markers and
+  ELF-to-binary matches passed verification.
+- The ARM64 parameter library was rebuilt with GCC 12.2. QEMU execution
+  against both the upstream and rebuilt libraries confirms all upstream key
+  types/defaults are preserved; only the three Hewers keys are added. Their
+  persistence and clearing behavior passed. `Notifications` remains available.
+- All safety tests: **3,197 passed, 1,456 skipped, 11,120 subtests passed**.
+- GM car, all car interfaces, firmware fingerprint and lateral-limit tests:
+  **800 passed, 208 skipped, 8,118 subtests passed**.
+- ASCM engagement/events, Hewers/lateral control and parameters:
+  **53 passed, 20 subtests passed**. Host tests use a freshly built parameter
+  library, archived native IPC from unchanged msgq source, and the limited
+  unused process-import substitutions described earlier.
+- Packed GM radar frames passed accumulation, track update/removal, fault
+  propagation and unavailable-radar publication checks.
+- All nine compiled model artifacts match the new upstream snapshot by hash,
+  including the downloaded LFS models. The tracked `prebuilt` marker remains.
+- Ruff on the integration Python files and `git diff --check` passed.
+
+Build scripts, logs, source/artifact hashes, model hashes and the validation
+manifest are saved in `~/volt_logs/gold_volt_merge_2026-11-25/`.
+No device startup or road testing was performed. The new upstream requires
+AGNOS 20.6, so installation can include an OS update and model downloads.

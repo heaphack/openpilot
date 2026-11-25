@@ -47,6 +47,10 @@ def make_msg(bus, addr, length=8, dat=None):
   return libsafety_py.make_CANPacket(addr, bus, dat)
 
 
+def state_buffer(copy):
+  return libsafety_py.ffi.buffer(libsafety_py.ffi.addressof(libsafety_py.libsafety, copy))
+
+
 class CANPackerSafety(CANPacker):
   def make_can_msg_safety(self, name_or_addr, bus, values, fix_checksum=None):
     msg = self.make_can_msg(name_or_addr, bus, values)
@@ -92,6 +96,10 @@ class SafetyTestBase(unittest.TestCase):
     if self.SAFETY_MODEL is not None:
       self.safety.set_safety_hooks(self.SAFETY_MODEL, self.SAFETY_PARAM)
     self.safety.init_tests()
+
+  def tearDown(self):
+    self.assertFalse(self.safety.safety_redundancy_fault)
+    self.assertEqual(state_buffer("safety_a")[:], state_buffer("safety_b")[:])
 
   @classmethod
   def setUpClass(cls):
@@ -203,29 +211,25 @@ class LongitudinalAccelSafetyTest(SafetyTestBase, abc.ABC):
 class LongitudinalGasBrakeSafetyTest(SafetyTestBase, abc.ABC):
 
   MIN_BRAKE: int = 0
-  MAX_BRAKE: int | None = None
-  MAX_POSSIBLE_BRAKE: int | None = None
+  MAX_BRAKE: int
+  MAX_POSSIBLE_BRAKE: int
 
   MIN_GAS: int = 0
-  MAX_GAS: int | None = None
+  MAX_GAS: int
   INACTIVE_GAS = 0
   MIN_POSSIBLE_GAS: int = 0
-  MAX_POSSIBLE_GAS: int | None = None
+  MAX_POSSIBLE_GAS: int
 
   def test_gas_brake_limits_correct(self):
-    self.assertIsNotNone(self.MAX_POSSIBLE_BRAKE)
-    self.assertIsNotNone(self.MAX_POSSIBLE_GAS)
-
-    assert self.MAX_BRAKE is not None and self.MAX_GAS is not None
     self.assertGreater(self.MAX_BRAKE, self.MIN_BRAKE)
     self.assertGreater(self.MAX_GAS, self.MIN_GAS)
 
   @abc.abstractmethod
-  def _send_gas_msg(self, gas: int):
+  def _send_gas_msg(self, gas: float):
     pass
 
   @abc.abstractmethod
-  def _send_brake_msg(self, brake: int):
+  def _send_brake_msg(self, brake: float):
     pass
 
   def test_brake_safety_check(self):
@@ -763,10 +767,10 @@ class AngleSteeringSafetyTest(VehicleSpeedSafetyTest):
       self.safety.set_controls_allowed(controls_allowed)
 
       for steer_control_enabled in (True, False):
-        for angle_meas in np.arange(-90, 91, 10):
+        for angle_meas in range(-90, 91, 10):
           self._reset_angle_measurement(angle_meas)
 
-          for angle_cmd in np.arange(-90, 91, 10):
+          for angle_cmd in range(-90, 91, 10):
             self._set_prev_desired_angle(angle_cmd)
 
             # controls_allowed is checked if actuation bit is 1, else the angle must be close to meas (inactive)
@@ -823,6 +827,10 @@ class CurvatureSteeringSafetyTest(VehicleSpeedSafetyTest):
 
   @abc.abstractmethod
   def _curvature_meas_msg(self, curvature: float):
+    pass
+
+  @abc.abstractmethod
+  def _speed_msg_2(self, speed: float):
     pass
 
   def _set_prev_desired_curvature(self, curvature: float):
@@ -1043,7 +1051,7 @@ class SafetyTest(SafetyTestBase):
 class CarSafetyTest(SafetyTest):
   STANDSTILL_THRESHOLD: float = 0.0
   GAS_PRESSED_THRESHOLD = 0
-  RELAY_MALFUNCTION_ADDRS: dict[int, tuple[int, ...]] | None = None
+  RELAY_MALFUNCTION_ADDRS: dict[int, tuple[int, ...]]
 
   @abc.abstractmethod
   def _user_brake_msg(self, brake):
@@ -1121,6 +1129,7 @@ class CarSafetyTest(SafetyTest):
   def test_prev_user_brake(self, _user_brake_msg=None, get_brake_pressed_prev=None):
     if _user_brake_msg is None:
       _user_brake_msg = self._user_brake_msg
+    if get_brake_pressed_prev is None:
       get_brake_pressed_prev = self.safety.get_brake_pressed_prev
 
     self.assertFalse(get_brake_pressed_prev())
@@ -1225,3 +1234,18 @@ class CarSafetyTest(SafetyTest):
         self.safety.safety_tick()
         self.assertFalse(self.safety.get_controls_allowed())
         self.assertFalse(self.safety.safety_config_valid())
+
+  def test_rx_lagging(self):
+    # a check lags after 10 missed messages or 1 s, whichever is longer. checks are at least 10 Hz, so it is always 1 s
+    lag_us = 1000000
+    self.assertGreater(self.safety.get_rx_checks_len(), 0)
+    for stale in range(self.safety.get_rx_checks_len()):
+      for age, allowed in ((lag_us, True), (lag_us + 1, False)):
+        with self.subTest(stale=stale, age=age):
+          self._reset_safety_hooks()
+          self.safety.set_timer(2 * lag_us)
+          self.safety.set_rx_checks_received(stale, age)
+          self.assertTrue(self.safety.safety_config_valid())
+          self.safety.set_controls_allowed(True)
+          self.safety.safety_tick()
+          self.assertEqual(allowed, self.safety.get_controls_allowed())

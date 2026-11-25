@@ -313,6 +313,7 @@ enum class FaultType_cd55c07f69249798: uint16_t {
   INTERRUPT_RATE_SOUND_DMA,
   MPU,
   TIMER,
+  SAFETY_REDUNDANCY,
 };
 CAPNP_DECLARE_ENUM(FaultType, cd55c07f69249798);
 CAPNP_DECLARE_SCHEMA(8a58adf93e5b3751);
@@ -385,12 +386,13 @@ enum class AudibleAlert_e9e600c8b9e6b62d: uint16_t {
   DISENGAGE,
   REFUSE,
   WARNING_SOFT,
-  WARNING_IMMEDIATE,
+  WARNING_IMMEDIATE_SYSTEM,
   PROMPT,
   PROMPT_REPEAT,
   PROMPT_DISTRACTED,
   PRE_ALERT,
   COMPLETE,
+  WARNING_IMMEDIATE_USER,
 };
 CAPNP_DECLARE_ENUM(AudibleAlert, e9e600c8b9e6b62d);
 CAPNP_DECLARE_SCHEMA(dbe58b96d2d1ac61);
@@ -11844,8 +11846,6 @@ public:
 
   inline bool getAllowBrake() const;
 
-  inline float getAccelBoost() const;
-
 private:
   ::capnp::_::StructReader _reader;
   template <typename, ::capnp::Kind>
@@ -11930,9 +11930,6 @@ public:
 
   inline bool getAllowBrake();
   inline void setAllowBrake(bool value);
-
-  inline float getAccelBoost();
-  inline void setAccelBoost(float value);
 
 private:
   ::capnp::_::StructBuilder _builder;
@@ -12034,6 +12031,8 @@ public:
   inline bool getCommIssue() const;
 
   inline  ::cereal::LongitudinalPersonality getPersonality() const;
+
+  inline float getAccelBoost() const;
 
 private:
   ::capnp::_::StructReader _reader;
@@ -12156,6 +12155,9 @@ public:
 
   inline  ::cereal::LongitudinalPersonality getPersonality();
   inline void setPersonality( ::cereal::LongitudinalPersonality value);
+
+  inline float getAccelBoost();
+  inline void setAccelBoost(float value);
 
 private:
   ::capnp::_::StructBuilder _builder;
@@ -36878,6 +36880,7 @@ inline typename LongitudinalPlan::Deprecated::Builder LongitudinalPlan::Builder:
   _builder.setDataField< ::uint32_t>(::capnp::bounded<16>() * ::capnp::ELEMENTS, 0);
   _builder.setDataField< ::uint32_t>(::capnp::bounded<17>() * ::capnp::ELEMENTS, 0);
   _builder.setDataField< ::uint16_t>(::capnp::bounded<40>() * ::capnp::ELEMENTS, 0);
+  _builder.setDataField< ::uint32_t>(::capnp::bounded<21>() * ::capnp::ELEMENTS, 0);
   _builder.getPointerField(::capnp::bounded<0>() * ::capnp::POINTERS).clear();
   _builder.getPointerField(::capnp::bounded<1>() * ::capnp::POINTERS).clear();
   _builder.getPointerField(::capnp::bounded<2>() * ::capnp::POINTERS).clear();
@@ -37135,20 +37138,6 @@ inline bool LongitudinalPlan::Builder::getAllowBrake() {
 inline void LongitudinalPlan::Builder::setAllowBrake(bool value) {
   _builder.setDataField<bool>(
       ::capnp::bounded<14>() * ::capnp::ELEMENTS, value);
-}
-
-inline float LongitudinalPlan::Reader::getAccelBoost() const {
-  return _reader.getDataField<float>(
-      ::capnp::bounded<21>() * ::capnp::ELEMENTS);
-}
-
-inline float LongitudinalPlan::Builder::getAccelBoost() {
-  return _builder.getDataField<float>(
-      ::capnp::bounded<21>() * ::capnp::ELEMENTS);
-}
-inline void LongitudinalPlan::Builder::setAccelBoost(float value) {
-  _builder.setDataField<float>(
-      ::capnp::bounded<21>() * ::capnp::ELEMENTS, value);
 }
 
 inline bool LongitudinalPlan::Deprecated::Reader::getLateralValid() const {
@@ -37596,6 +37585,20 @@ inline  ::cereal::LongitudinalPersonality LongitudinalPlan::Deprecated::Builder:
 inline void LongitudinalPlan::Deprecated::Builder::setPersonality( ::cereal::LongitudinalPersonality value) {
   _builder.setDataField< ::cereal::LongitudinalPersonality>(
       ::capnp::bounded<40>() * ::capnp::ELEMENTS, value);
+}
+
+inline float LongitudinalPlan::Deprecated::Reader::getAccelBoost() const {
+  return _reader.getDataField<float>(
+      ::capnp::bounded<21>() * ::capnp::ELEMENTS);
+}
+
+inline float LongitudinalPlan::Deprecated::Builder::getAccelBoost() {
+  return _builder.getDataField<float>(
+      ::capnp::bounded<21>() * ::capnp::ELEMENTS);
+}
+inline void LongitudinalPlan::Deprecated::Builder::setAccelBoost(float value) {
+  _builder.setDataField<float>(
+      ::capnp::bounded<21>() * ::capnp::ELEMENTS, value);
 }
 
 inline bool UiPlan::Reader::hasPosition() const {

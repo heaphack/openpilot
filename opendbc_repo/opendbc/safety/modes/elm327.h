@@ -1,4 +1,5 @@
-#pragma once
+#ifndef SAFETY_MODES_ELM327_H
+#define SAFETY_MODES_ELM327_H
 
 #include "opendbc/safety/declarations.h"
 #include "opendbc/safety/modes/defaults.h"
@@ -11,10 +12,10 @@ static bool elm327_tx_hook(const CANPacket_t *msg) {
   const bool gm_diag_addr = (msg->addr == GM_CAMERA_DIAG_ADDR) || (msg->addr == GM_PSCM_DIAG_ADDR);
 
   bool tx = true;
-  int len = GET_LEN(msg);
+  uint32_t len = GET_LEN(msg);
 
   // All ISO 15765-4 messages must be 8 bytes long
-  if (len != 8) {
+  if (len != 8U) {
     tx = false;
   }
 
@@ -26,8 +27,8 @@ static bool elm327_tx_hook(const CANPacket_t *msg) {
     tx = false;
   }
 
-  // GM camera and PSCM use non-standard diagnostic addresses, these have no control message address collisions
-  if (gm_diag_addr && (len == 8)) {
+  // GM camera and PSCM use non-standard diagnostic addresses.
+  if (gm_diag_addr && (len == 8U)) {
     // Only allow known frame types for ISO 15765-2
     if ((msg->data[0] & 0xF0U) > 0x30U) {
       tx = false;
@@ -38,8 +39,9 @@ static bool elm327_tx_hook(const CANPacket_t *msg) {
 }
 
 // If safety_param == 0, bus 1 is multiplexed to the OBD-II port
-const safety_hooks elm327_hooks = {
+static const safety_hooks elm327_hooks = {
   .init = nooutput_init,
-  .rx = default_rx_hook,
   .tx = elm327_tx_hook,
 };
+
+#endif  // SAFETY_MODES_ELM327_H

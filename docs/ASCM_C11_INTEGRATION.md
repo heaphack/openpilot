@@ -669,3 +669,32 @@ Python only: no Panda rebuild.
 Not validated: device startup and vehicle behavior. A Volt without the
 interceptor harness sends these commands straight to the EPS; that
 configuration was not driven for this change.
+
+## Gold upstream integration — 2026-11-25
+
+`gold-volt-11-25-26` starts at the working `gold-volt-11-5-26` tip
+`3c28c162c42a2f54d525f52449e66360d358437e` and integrates commaai's
+`nightly-chestnut` snapshot `9bca49532aa41ad49df3e9483f76869c3d9b03c9`
+(November 25). Nightly releases have independent Git histories, so the
+three-way merge uses the previously integrated snapshot
+`836afe1bce0c053a8e0a5c12c03f18def75c6a5f` as its explicit base.
+
+The Volt retains the ASCM c11 transport and supervisor, auto-resume and pedal
+handling, firmware fingerprinting, Hewers' column controller and tuning keys,
+4 Nm limit, 50 Hz active steering with speed-scheduled slew, zero minimum
+steering speed with standstill inhibition, and the Volt-only loopback-gate
+removal. These application/controller sources are unchanged from the old Gold
+branch. Upstream's new radar interface, planner, model files and AGNOS 20.6
+requirement are included.
+
+Panda now evaluates safety with two copies of its state and configuration.
+The custom c11 and Volt-limit flags live in `SafetySetup` with upstream's GM
+configuration so they participate in both evaluations and the consistency
+check. The signed brake-acceleration check, c11 CAN addresses and Volt torque
+limits are preserved. The axle-torque decoder uses upstream's `from_offset`
+helper; its ACC-active allowance during gas override is retained.
+
+The source merge must be paired with the following artifact commit before
+installation: the prebuilt branch needs Panda/body apps and debug bootstubs
+rebuilt against this safety API, and an ARM64 parameter library containing
+both upstream's new `Notifications` key and Hewers' three tuning keys.

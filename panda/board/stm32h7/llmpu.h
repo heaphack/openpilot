@@ -1,17 +1,20 @@
-#pragma once
+#ifndef BOARD_STM32H7_LLMPU_H
+#define BOARD_STM32H7_LLMPU_H
+
+#include "opendbc/safety/declarations.h"
 
 // linker symbols, see stm32h7x5_flash.ld
-extern uint32_t _ssafety[16];
-extern uint32_t _stack_guard;
+extern uint32_t safety_start;
+extern uint32_t stack_guard;
 
 #define MPU_REGION_SAFETY 0U
 #define MPU_REGION_STACK_GUARD 1U
 
-// read only once FAULT_MPU is permanent, until then a write from outside the safety code is caught in mpu_safety_open()
+// read only once FAULT_MPU is permanent, until then a write to controls_allowed from outside the safety code is caught in mpu_safety_open()
 #define MPU_SAFETY_CLOSED (((PERMANENT_FAULTS & FAULT_MPU) != 0U) ? ARM_MPU_AP_PRO : ARM_MPU_AP_PRIV)
 
 static uint8_t mpu_safety_depth = 0U;
-static uint32_t mpu_safety_copy[16];
+static bool mpu_safety_controls_allowed_copy = false;
 static bool mpu_safety_changed = false;
 static uint32_t mpu_safety_changed_addr = 0U;
 
@@ -21,7 +24,7 @@ static uint32_t mpu_rasr(uint32_t access, uint32_t size) {
 }
 
 static uint32_t mpu_safety_rasr(uint32_t access) {
-  return mpu_rasr(access, ARM_MPU_REGION_SIZE_64B);
+  return mpu_rasr(access, ARM_MPU_REGION_SIZE_2KB);
 }
 
 static uint32_t mpu_stack_guard_rasr(void) {
@@ -42,11 +45,9 @@ void mpu_safety_open(void) {
   if (mpu_safety_depth == 0U) {
     // body firmware runs without the MPU
     if ((MPU->CTRL & MPU_CTRL_ENABLE_Msk) != 0U) {
-      for (uint8_t i = 0U; i < 16U; i++) {
-        if (!mpu_safety_changed && (_ssafety[i] != mpu_safety_copy[i])) {
-          mpu_safety_changed = true;
-          mpu_safety_changed_addr = (uint32_t)&_ssafety[i];
-        }
+      if (!mpu_safety_changed && (safety.controls_allowed != mpu_safety_controls_allowed_copy)) {
+        mpu_safety_changed = true;
+        mpu_safety_changed_addr = (uint32_t)&safety.controls_allowed;
       }
     }
     mpu_set_safety_access(ARM_MPU_AP_PRIV);
@@ -58,20 +59,20 @@ void mpu_safety_close(void) {
   mpu_safety_depth -= 1U;
   if (mpu_safety_depth == 0U) {
     mpu_set_safety_access(MPU_SAFETY_CLOSED);
-    (void)memcpy(mpu_safety_copy, _ssafety, sizeof(mpu_safety_copy));
+    mpu_safety_controls_allowed_copy = safety.controls_allowed;
   }
   EXIT_CRITICAL();
 }
 
 void mpu_init(void) {
   MPU->RNR = MPU_REGION_STACK_GUARD;
-  MPU->RBAR = (uint32_t)&_stack_guard;
+  MPU->RBAR = (uint32_t)&stack_guard;
   MPU->RASR = mpu_stack_guard_rasr();
 
   MPU->RNR = MPU_REGION_SAFETY;
-  MPU->RBAR = (uint32_t)&_ssafety;
+  MPU->RBAR = (uint32_t)&safety_start;
   MPU->RASR = mpu_safety_rasr(MPU_SAFETY_CLOSED);
-  (void)memcpy(mpu_safety_copy, _ssafety, sizeof(mpu_safety_copy));
+  mpu_safety_controls_allowed_copy = safety.controls_allowed;
 
   // privileged default map for everything else, a violation escalates to HardFault
   register_set(&(MPU->CTRL), MPU_CTRL_PRIVDEFENA_Msk | MPU_CTRL_ENABLE_Msk, 0x7U);
@@ -87,8 +88,8 @@ static bool mpu_region_ok(uint32_t region, uint32_t base, uint32_t rasr) {
 // RBAR and RASR are banked by RNR, so register_set can't read them back
 void mpu_check(void) {
   ENTER_CRITICAL();
-  uint32_t bad = mpu_region_ok(MPU_REGION_STACK_GUARD, (uint32_t)&_stack_guard, mpu_stack_guard_rasr()) ? 0U : (1UL << MPU_REGION_STACK_GUARD);
-  bad |= mpu_region_ok(MPU_REGION_SAFETY, (uint32_t)&_ssafety, mpu_safety_rasr(MPU_SAFETY_CLOSED)) ? 0U : (1UL << MPU_REGION_SAFETY);
+  uint32_t bad = mpu_region_ok(MPU_REGION_STACK_GUARD, (uint32_t)&stack_guard, mpu_stack_guard_rasr()) ? 0U : (1UL << MPU_REGION_STACK_GUARD);
+  bad |= mpu_region_ok(MPU_REGION_SAFETY, (uint32_t)&safety_start, mpu_safety_rasr(MPU_SAFETY_CLOSED)) ? 0U : (1UL << MPU_REGION_SAFETY);
   for (uint32_t region = MPU_REGION_STACK_GUARD + 1U; region < ((MPU->TYPE & MPU_TYPE_DREGION_Msk) >> MPU_TYPE_DREGION_Pos); region++) {
     MPU->RNR = region;
     bad |= ((MPU->RASR & MPU_RASR_ENABLE_Msk) == 0U) ? 0U : (1UL << region);
@@ -101,3 +102,5 @@ void mpu_check(void) {
     fault_occurred_value(FAULT_MPU, mpu_safety_changed_addr);
   }
 }
+
+#endif  // BOARD_STM32H7_LLMPU_H

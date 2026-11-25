@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from openpilot.common.params import Params
 from openpilot.selfdrive.locationd.calibrationd import HEIGHT_INIT
 from openpilot.selfdrive.ui.ui_state import ui_state
-from openpilot.system.ui.lib.shader_polygon import draw_polygon, Gradient
+from openpilot.system.ui.lib.polygon import draw_polygon, Gradient
 from openpilot.system.ui.widgets import Widget
 
 CLIP_MARGIN = 500
@@ -46,6 +46,7 @@ class ModelRenderer(Widget):
     self._road_edge_stds = np.zeros(2, dtype=np.float32)
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
     self._path_offset_z = HEIGHT_INIT[0]
+    self._path_half_width = 0.9  # m
 
     # Initialize ModelPoints objects
     self._path = ModelPoints()
@@ -81,8 +82,7 @@ class ModelRenderer(Widget):
     sm = ui_state.sm
 
     # Check if data is up-to-date
-    if (sm.recv_frame["extrinsicsCalibration"] < ui_state.started_frame or
-        sm.recv_frame["modelV2"] < ui_state.started_frame):
+    if not ui_state.received_since_started("extrinsicsCalibration") or not ui_state.received_since_started("modelV2"):
       return
 
     # Set up clipping region
@@ -176,7 +176,7 @@ class ModelRenderer(Widget):
 
     max_idx = self._get_path_length_idx(path_x_array, max_distance)
     self._path.projected_points = self._map_line_to_polygon(
-      self._path.raw_points, 0.9, self._path_offset_z, max_idx, max_distance, allow_invert=False
+      self._path.raw_points, self._path_half_width, self._path_offset_z, max_idx, max_distance, allow_invert=False
     )
 
     self._update_path_gradient()
